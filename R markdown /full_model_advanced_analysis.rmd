@@ -1,0 +1,362 @@
+---
+title: "Full Model – Advanced Analysis"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+fontsize: 11pt
+header-includes:
+  - \usepackage{float}
+  - \usepackage{amsmath}
+  - \usepackage{mathtools}
+  - \setlength{\emergencystretch}{2em}
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(fixest)
+library(modelsummary)
+library(kableExtra)
+library(broom)
+
+knitr::opts_chunk$set(
+echo = FALSE,
+message = FALSE,
+warning = FALSE,
+results = "asis"
+)
+
+dir.create("output/tables", recursive = TRUE, showWarnings = FALSE)
+dir.create("output/figures", recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+base_path <- "~/Desktop/Tesina IV /Data analysis /Downloaded data"
+
+df_raw <- read_csv(
+file.path(base_path, "FINAL_ANALYSIS_DATASET_2006_2021.csv"),
+show_col_types = FALSE
+)
+
+df_country <- df_raw %>%
+group_by(buyer_country, tender_year) %>%
+summarise(
+avg_contract_price     = mean(tender_digiwhist_price, na.rm = TRUE),
+total_expenditure_real = mean(total_expenditure_real, na.rm = TRUE),
+unemp_rate             = mean(unemp_rate, na.rm = TRUE),
+pop_density            = mean(pop_density, na.rm = TRUE),
+gov_debt_pct_gdp       = mean(gov_debt_pct_gdp, na.rm = TRUE),
+corruption_control     = mean(corruption_control, na.rm = TRUE),
+gov_state_market       = mean(gov_state_market, na.rm = TRUE),
+recession              = mean(recession, na.rm = TRUE),
+n_contracts_year       = n(),
+.groups = "drop"
+)
+
+df <- df_country %>%
+filter(tender_year >= 2011, tender_year <= 2021) %>%
+filter(total_expenditure_real > 0, avg_contract_price > 0) %>%
+mutate(
+ln_spesa       = log(total_expenditure_real),
+ln_valmean     = log(avg_contract_price),
+ln_unemp_rate  = log(unemp_rate),
+ln_pop_density = log(pop_density),
+ln_gov_debt    = log(gov_debt_pct_gdp)
+) %>%
+group_by(buyer_country) %>%
+mutate(
+ln_spesa_dm = ln_spesa - mean(ln_spesa, na.rm = TRUE),
+X           = ln_valmean - mean(ln_valmean, na.rm = TRUE)
+) %>%
+ungroup()
+```
+
+# Pre vs Post-2016 Two-way Fixed Effects and Interaction Test
+
+This section evaluates whether the relationship between outsourcing intensity and public expenditure changes after 2016, the year in which the EU Procurement Directives were transposed and transparency requirements were strengthened.
+
+Three specifications are estimated:
+
+1. A two-way fixed effects model on the pre-2016 subsample.
+2. The same specification on the post-2016 subsample.
+3. A full-sample TWFE model including an interaction term between outsourcing intensity and a post-2016 dummy.
+
+The estimated equation for the interaction model is:
+
+\[
+\ln(\text{expenditure}_{ct})^{dm}
+= \beta X_{ct}
++ \delta \left(X_{ct} \cdot \text{Post2016}_t\right)
++ \gamma Z_{ct}
++ \alpha_c + \lambda_t + \varepsilon_{ct}
+\]
+
+where:
+
+- \(X_{ct}\) is demeaned log outsourcing intensity,
+- \(Z_{ct}\) are log-transformed macro controls (plus corruption, state–market, recession),
+- \(\alpha_c\) are country fixed effects,
+- \(\lambda_t\) are year fixed effects.
+
+The parameter \(\delta\) measures whether the marginal relationship between outsourcing and expenditure changes after 2016.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+df_pre  <- df %>% filter(tender_year < 2016)
+df_post <- df %>% filter(tender_year >= 2016)
+
+m_pre <- feols(
+ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+corruption_control + gov_state_market + recession |
+buyer_country + tender_year,
+data = df_pre, cluster = ~ buyer_country
+)
+
+m_post <- feols(
+ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+corruption_control + gov_state_market + recession |
+buyer_country + tender_year,
+data = df_post, cluster = ~ buyer_country
+)
+
+df <- df %>% mutate(post2016 = if_else(tender_year >= 2016, 1, 0))
+
+m_inter <- feols(
+ln_spesa_dm ~ X + X:post2016 + ln_unemp_rate + ln_pop_density +
+ln_gov_debt + corruption_control + gov_state_market + recession |
+buyer_country + tender_year,
+data = df, cluster = ~ buyer_country
+)
+
+# TWFE table for pre/post 2016 + interaction
+
+tab_prepost <- etable(
+  list(
+    "Pre-2016 TWFE"     = m_pre,
+    "Post-2016 TWFE"    = m_post,
+    "Interaction model" = m_inter
+  ),
+  tex = TRUE,
+  digits = 4,
+  cluster = "buyer_country",
+  fitstat = ~ n + r2,
+  title = "Two-way FE: Pre/Post 2016 and Interaction Model",
+  placement = "H"   # <<< forza la posizione
+)
+
+tab_prepost
+
+```
+
+# Repeated Cross-sectional Estimates by Year
+
+This section estimates a sequence of year-specific cross-sectional regressions. For each year \(t\), the following model is estimated:
+
+\[
+\ln(\text{expenditure}_{ct})
+= \beta_t \ln(\text{outsourcing}_{ct})
++ \gamma_t Z_{ct}
++ \varepsilon_{ct}
+\]
+
+This specification does not include fixed effects.  
+Each coefficient \(\beta_t\) captures the contemporaneous association between outsourcing intensity and public expenditure **within a given cross section**, allowing for time-variation in the magnitude and sign of the relationship.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# --- Repeated Cross-sectional OLS (per Year) ---
+
+cs_results <- df %>%
+group_by(tender_year) %>%
+group_modify(~ {
+m <- lm(
+ln_spesa ~ ln_valmean + ln_unemp_rate + ln_pop_density +
+ln_gov_debt + corruption_control + gov_state_market + recession,
+data = .x
+)
+tidy(m) %>% mutate(n_obs = nrow(.x))
+}) %>% ungroup()
+
+cs_X <- cs_results %>%
+filter(term == "ln_valmean") %>%
+mutate(ci_low = estimate - 1.96*std.error,
+ci_high = estimate + 1.96*std.error)
+
+cs_table <- kable(
+  cs_X %>% select(tender_year, estimate, std.error, ci_low, ci_high, p.value, n_obs),
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Repeated cross-sectional estimates for log of valmean"
+) %>%
+  kable_styling(latex_options = c("HOLD_position"))  # <<< Fissa la tabella
+
+cs_table
+```
+
+# Country-Level Correlation and Relationship With Micro-Data Coverage
+
+The first diagnostic computes, for each country \(c\), the Pearson correlation between demeaned public expenditure and demeaned outsourcing intensity:
+
+\[
+\rho_c = \operatorname{Corr}\!\left( 
+\ln(\text{expenditure}_{ct})^{dm},\, X_{ct}
+\right)
+\]
+
+
+Since both variables are demeaned within country, \(\rho_c\) captures **purely within-country co-movement**, abstracting from long-run cross-country differences.
+
+To evaluate whether the strength or sign of this correlation relates to the quality of the underlying procurement micro data, we construct a measure of coverage:
+\[
+\text{coverage}_c = \sum_t N_{ct}
+\]
+
+
+where \(N_{ct}\) is the number of micro-level contracts observed for country \(c\) in year \(t\).
+
+We then compute:
+
+- the correlation between \(\rho_c\) and coverage,
+- the correlation between coverage and the indicator \(1\{\rho_c > 0\}\).
+
+These diagnostics assess whether limited micro coverage is systematically associated with weaker or negative within-country correlations.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+cor_table <- df %>%
+group_by(buyer_country) %>%
+summarise(
+cor_YX = cor(ln_spesa_dm, X, use = "complete.obs"),
+n_obs = n(), .groups = "drop"
+)
+
+coverage <- df_raw %>%
+filter(tender_year >= 2011, tender_year <= 2021) %>%
+count(buyer_country) %>%
+rename(total_contracts = n)
+
+cor_cov <- cor_table %>%
+left_join(coverage, by = "buyer_country") %>%
+mutate(positive_corr = if_else(cor_YX > 0, 1, 0))
+
+tab_corr <- kable(
+  cor_cov,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Within-country correlation and micro-data coverage"
+) %>%
+  kable_styling(latex_options = c("HOLD_position"))
+
+tab_corr
+
+```
+
+## Coverage Tertiles: Group-Based Diagnostics
+
+To investigate whether the relationship between outsourcing and expenditure varies across countries with different levels of micro-data completeness, we partition countries into three equally sized groups (tertiles) based on micro-data coverage:
+
+- Tertile 1: countries with the lowest number of observed contracts,
+- Tertile 2: intermediate coverage,
+- Tertile 3: highest coverage.
+
+For each group \(g\), we compute:
+
+- the average number of contracts per country in the group,
+- the average within-country correlation \(\rho_c\),
+- the share of countries with a positive correlation,
+- the number of countries in the group.
+
+This provides a coarse but informative classification, showing whether higher-coverage countries exhibit systematically different patterns in the outsourcing–expenditure linkage.
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+cor_cov <- cor_cov %>%
+mutate(coverage_group = ntile(total_contracts, 3))
+
+coverage_summary <- cor_cov %>%
+group_by(coverage_group) %>%
+summarise(
+mean_coverage   = mean(total_contracts),
+mean_correlation= mean(cor_YX),
+share_positive  = mean(positive_corr),
+n_countries     = n(),
+.groups = "drop"
+)
+
+tab_cov <- kable(
+  coverage_summary,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Coverage tertiles and correlation patterns"
+) %>%
+  kable_styling(latex_options = c("HOLD_position"))
+
+tab_cov
+```
+
+# TWFE Models by Expenditure Tertiles
+
+To assess heterogeneity in the outsourcing–expenditure relationship across different levels of public spending, countries are partitioned into three groups based on the distribution of their average log real expenditure:
+
+- Group 1: lowest average expenditure (bottom tertile),
+- Group 2: medium expenditure (middle tertile),
+- Group 3: highest average expenditure (top tertile).
+
+Formally, for each country \(c\) we compute:
+
+\[
+\overline{\ln(\text{expenditure}_{c})}
+= \frac{1}{T_c}
+\sum_t \ln(\text{expenditure}_{ct})
+\]
+
+
+Countries are then assigned to tertiles using the empirical quantiles of this distribution.
+
+For each expenditure group \(g\), we estimate a two-way fixed effects model:
+
+\[
+\ln(\text{expenditure}_{ct})^{dm}
+= \beta_g X_{ct}
++ \gamma_g Z_{ct}
++ \alpha_c + \lambda_t + \varepsilon_{ct}
+\]
+
+This approach allows the coefficient of interest \(\beta_g\) to vary across low-, medium-, and high-expenditure countries, providing evidence on whether outsourcing intensity has differential associations depending on the scale of the public sector.
+.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+country_mean <- df %>%
+group_by(buyer_country) %>%
+summarise(mean_ln_spesa = mean(ln_spesa), .groups = "drop") %>%
+mutate(Y_group = ntile(mean_ln_spesa, 3))
+
+df_q <- df %>% left_join(country_mean, by = "buyer_country")
+
+groups <- sort(unique(df_q$Y_group))
+
+models_q <- map(
+groups,
+~ feols(
+ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+corruption_control + gov_state_market + recession |
+buyer_country + tender_year,
+data = df_q %>% filter(Y_group == .x),
+cluster = ~ buyer_country
+)
+)
+
+names(models_q) <- paste("Group", groups)
+
+tab_q <- etable(
+  models_q,
+  tex = TRUE,
+  digits = 4,
+  cluster = "buyer_country",
+  fitstat = ~ n + r2,
+  title = "TWFE by expenditure tertile",
+  placement = "H"   # <<< molto importante
+)
+
+tab_q
+```
+

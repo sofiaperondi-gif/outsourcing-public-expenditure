@@ -1,0 +1,285 @@
+---
+title: "EU-27 Public Expenditure Analysis: Trends and Composition (2006-2021)"
+author: "Exploratory Data Analysis"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+# Color scheme for consistent visuals
+theme_set(theme_minimal())
+colors <- c("#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e")
+
+```
+
+Executive Summary:
+
+This report provides an exploratory analysis of public expenditure dynamics across EU-27 countries from 2006 to 2021.
+
+Important Methodological Notes
+
+Data Processing and Quality:
+
+Initial data cleaning: Removed duplicate country-year observations (reduced from 1,296 to 432 observations)
+Growth rate correction: Recalculated proper year-on-year growth rates after identifying calculation errors in original data
+Value filtering: Retained only observations with reasonable expenditure and GDP values
+Unit consistency: All values in real terms (2010 prices) using GDP deflator
+Expenditure Measure Considerations:
+
+The analysis uses Total Expenditure (TE) which includes:
+
+- Government consumption and investment
+- Social transfers (pensions, unemployment benefits)
+- Subsidies to businesses and households
+- Interest payments on public debt
+- Other current transfers
+*Note: TE represents all government outflows, not just spending on public services. This explains the high expenditure-to-GDP ratios observed (typically 40-60% in welfare states).*
+
+Research Context:
+This exploratory analysis supports broader research on:
+
+- Outsourcing efficiency and its fiscal impacts
+- Substitution effects between public employment and procurement
+
+```{r}
+# Load and clean data
+setwd("/Users/sofiaperondi/Desktop/Tesina IV /Data selection and summary analysis /Downloaded data")
+data <- fread("eurostat_data_real_with_growth.csv")
+
+cat("**Initial Data Status:**\n")
+cat("- Original observations:", nrow(data), "\n")
+cat("- Countries:", length(unique(data$geo)), "\n")
+cat("- Years:", min(data$year), "to", max(data$year), "\n")
+
+# Remove duplicates and filter reasonable values
+data_clean <- data %>%
+  distinct(geo, year, .keep_all = TRUE) %>%
+  filter(total_expenditure_real >= 1000 & total_expenditure_real <= 1e9 &
+           gdp_real >= 1000 & gdp_real <= 1e9)
+
+cat("**After Data Cleaning:**\n")
+cat("- Final observations:", nrow(data_clean), " (27 countries × 16 years)\n")
+cat("- Duplicates removed:", nrow(data) - nrow(data_clean), "\n")
+
+# Recalculate growth rates
+data_clean <- data_clean %>%
+  arrange(geo, year) %>%
+  group_by(geo) %>%
+  mutate(
+    expenditure_growth_proper = (total_expenditure_real / lag(total_expenditure_real) - 1) * 100,
+    gdp_growth_proper = (gdp_real / lag(gdp_real) - 1) * 100,
+    intermediate_growth_proper = (intermediate_consumption_real / lag(intermediate_consumption_real) - 1) * 100,
+    compensation_growth_proper = (compensation_employees_real / lag(compensation_employees_real) - 1) * 100
+  ) %>%
+  ungroup()
+
+```
+
+Methodology and data quality
+
+```{r}
+cat("**Data Processing Steps Applied:**\n")
+cat("1. **Duplicate Removal**: Eliminated multiple observations per country-year\n")
+cat("2. **Growth Rate Correction**: Recalculated using proper formula after identifying errors\n")
+cat("3. **Outlier Filtering**: Removed extreme values and growth rates beyond reasonable ranges\n")
+cat("4. **Unit Standardization**: All values converted to millions of euros, 2010 constant prices\n")
+cat("5. **Deflation Method**: Used GDP deflator with 2010 base year\n\n")
+
+exp_concepts <- data.frame(
+  Variable = c("TE (Total Expenditure)", "P3 (Final Consumption)", "P2 (Intermediate Consumption)", 
+               "D1 (Compensation of Employees)", "P5 (Gross Fixed Capital)"),
+  Description = c("All government outlays including transfers and interest", 
+                  "Government consumption of services", 
+                  "Purchases of goods/services from private sector", 
+                  "Public sector wages and salaries", 
+                  "Public investment in infrastructure"),
+  Relevance = c("Overall fiscal impact analysis", 
+                "Service delivery measurement", 
+                "Procurement and outsourcing intensity", 
+                "Public employment costs", 
+                "Public investment analysis")
+)
+
+kable(exp_concepts, caption = "Eurostat Expenditure Variables and Their Interpretation")
+```
+
+Limitations and Interpretative Notes
+
+TE includes transfers: High expenditure/GDP ratios reflect comprehensive government outlays in European welfare states
+Cross-country comparability: Institutional differences affect expenditure composition and levels
+Crisis periods: 2008-2009 and 2020 observations reflect exceptional fiscal policy responses
+Exploratory nature: Descriptive patterns require causal investigation in subsequent research
+Data quality: Initial data processing issues required correction of growth rate calculations. 
+
+Descriptive Statistics: 
+
+```{r}
+summary_stats <- data_clean %>%
+  summarise(
+    Observations = n(),
+    Countries = n_distinct(geo),
+    `Mean Expenditure (million €)` = round(mean(total_expenditure_real, na.rm = TRUE), 1),
+    `SD Expenditure` = round(sd(total_expenditure_real, na.rm = TRUE), 1),
+    `Mean GDP (million €)` = round(mean(gdp_real, na.rm = TRUE), 1),
+    `SD GDP` = round(sd(gdp_real, na.rm = TRUE), 1),
+    `Mean Expenditure Growth (%)` = round(mean(expenditure_growth_proper, na.rm = TRUE), 2),
+    `Mean GDP Growth (%)` = round(mean(gdp_growth_proper, na.rm = TRUE), 2)
+  )
+
+kable(summary_stats, caption = "Overall Descriptive Statistics")
+```
+
+Country level averages 
+
+```{r}
+summary_country <- data_clean %>%
+  group_by(geo) %>%
+  summarise(
+    `Mean Expenditure (million €)` = round(mean(total_expenditure_real, na.rm = TRUE), 1),
+    `Mean Growth (%)` = round(mean(expenditure_growth_proper, na.rm = TRUE), 2),
+    `Mean GDP (million €)` = round(mean(gdp_real, na.rm = TRUE), 1),
+    `P2 Share (%)` = round(mean(intermediate_consumption_real / total_expenditure_real * 100, na.rm = TRUE), 1),
+    `D1 Share (%)` = round(mean(compensation_employees_real / total_expenditure_real * 100, na.rm = TRUE), 1),
+    .groups = "drop"
+  )
+
+kable(head(arrange(summary_country, desc(`Mean Expenditure (million €)`)), 10), 
+      caption = "Country-Level Averages (Top 10 by Expenditure)")
+```
+
+Time Trends Analysis:
+
+```{r}
+trend_expenditure <- data_clean %>%
+  group_by(year) %>%
+  summarise(mean_expenditure = mean(total_expenditure_real, na.rm = TRUE))
+
+ggplot(trend_expenditure, aes(x = year, y = mean_expenditure)) +
+  geom_line(color = colors[1], linewidth = 1.2) +
+  geom_point(color = colors[1], size = 2) +
+  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale())) +
+  labs(title = "Figure 1: EU-27 Average Real Public Expenditure (2006–2021)",
+       subtitle = "Total Expenditure (TE) includes transfers, subsidies, and interest payments\nAll values in real terms (2010 prices), millions of euros",
+       x = "Year", y = "Real Total Expenditure (million €)") +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(color = "gray50", size = 10))
+```
+
+Interpretation: Figure 1 shows the evolution of average real public expenditure across EU-27 countries. The trend reveals significant fluctuations corresponding to major economic events:
+
+2008-2009 Global Financial Crisis: Expansion of government outlays for stimulus and automatic stabilizers
+2010-2014 Eurozone Crisis: Mixed patterns reflecting fiscal consolidation in some countries and continued support in others
+2020 COVID-19 Pandemic: Sharp increase reflecting emergency fiscal responses, health spending, and economic support measures
+TE Composition Note: The upward trend reflects both expanding public services and growth in social transfers characteristic of European welfare states
+
+Expenditure growth dynamics: 
+
+```{r}
+trend_growth <- data_clean %>%
+  group_by(year) %>%
+  summarise(
+    mean_growth = mean(expenditure_growth_proper, na.rm = TRUE),
+    mean_gdp_growth = mean(gdp_growth_proper, na.rm = TRUE)
+  )
+
+ggplot(trend_growth, aes(x = year)) +
+  geom_line(aes(y = mean_growth, color = "Expenditure Growth"), linewidth = 1.2) +
+  geom_line(aes(y = mean_gdp_growth, color = "GDP Growth"), linewidth = 1.2) +
+  geom_point(aes(y = mean_growth), color = colors[2], size = 2) +
+  geom_point(aes(y = mean_gdp_growth), color = colors[3], size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50", alpha = 0.7) +
+  scale_color_manual(values = c("Expenditure Growth" = colors[2], "GDP Growth" = colors[3])) +
+  labs(title = "Figure 2: EU-27 Average Growth Rates (2006–2021)",
+       subtitle = "Year-on-year percentage change in real terms\nCorrected growth rates after data processing issues",
+       x = "Year", y = "Growth Rate (%)",
+       color = "Variable") +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(color = "gray50", size = 10),
+        legend.position = "bottom")
+```
+
+Expenditure composition: 
+
+```{r}
+composition <- data_clean %>%
+  mutate(
+    share_intermediate = intermediate_consumption_real / total_expenditure_real * 100,
+    share_compensation = compensation_employees_real / total_expenditure_real * 100,
+    share_capital = gross_fixed_capital_real / total_expenditure_real * 100,
+    share_other = 100 - (share_intermediate + share_compensation + share_capital)
+  ) %>%
+  group_by(year) %>%
+  summarise(
+    mean_share_intermediate = mean(share_intermediate, na.rm = TRUE),
+    mean_share_compensation = mean(share_compensation, na.rm = TRUE),
+    mean_share_capital = mean(share_capital, na.rm = TRUE),
+    mean_share_other = mean(share_other, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = starts_with("mean_share"),
+               names_to = "component",
+               values_to = "share") %>%
+  mutate(component = recode(component,
+                            mean_share_intermediate = "Intermediate Consumption (P2)",
+                            mean_share_compensation = "Compensation of Employees (D1)",
+                            mean_share_capital = "Gross Fixed Capital Formation (P5)",
+                            mean_share_other = "Other Expenditure"))
+
+ggplot(composition, aes(x = year, y = share, color = component)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  scale_color_manual(values = colors) +
+  labs(title = "Figure 3: Composition of Real Expenditure by Component (2006–2021)",
+       subtitle = "Shares of total expenditure (%)\nNote: 'Other Expenditure' includes transfers, subsidies, and interest payments",
+       x = "Year", y = "Share of Total Expenditure (%)", 
+       color = "Component") +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(color = "gray50", size = 10),
+        legend.position = "bottom")
+```
+
+Correlation analysis
+
+```{r}
+corr_data <- data_clean %>%
+  filter(is.finite(expenditure_growth_proper),
+         is.finite(gdp_growth_proper),
+         abs(expenditure_growth_proper) < 50,
+         abs(gdp_growth_proper) < 30)
+
+corr_result <- corr_data %>%
+  summarise(
+    correlation = cor(expenditure_growth_proper, gdp_growth_proper, use = "complete.obs"),
+    observations = n()
+  )
+
+kable(corr_result, caption = "Correlation between Expenditure Growth and GDP Growth")
+
+ggplot(corr_data, aes(x = gdp_growth_proper, y = expenditure_growth_proper)) +
+  geom_point(alpha = 0.6, color = colors[4], size = 2) +
+  geom_smooth(method = "lm", se = TRUE, color = colors[2], fill = colors[2], alpha = 0.2) +
+  labs(title = "Figure 4: Relationship between GDP Growth and Expenditure Growth",
+       subtitle = paste("EU-27 Countries, 2006-2021 | Correlation:", round(corr_result$correlation, 3), 
+                       "| Corrected growth rates after data processing"),
+       x = "GDP Growth (%)", y = "Expenditure Growth (%)") +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(color = "gray50", size = 10))
+```
+
+Figure 4 examines the relationship between economic growth and public expenditure growth.
+
+
+

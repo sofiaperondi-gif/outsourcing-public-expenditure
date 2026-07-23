@@ -1,0 +1,165 @@
+---
+title: "Dynamic Model of Real Public Expenditure Growth with Controls"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    number_sections: true
+fontsize: 11pt
+geometry: margin=1in
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{caption}
+  - \usepackage{siunitx}
+---
+
+# Introduction and Motivation
+
+Previous diagnostic analyses on the baseline TWFE model revealed weak but non-negligible **persistence** in real public expenditure growth across European countries.  
+This empirical evidence motivates the estimation of a **dynamic specification**, introducing the lag of the dependent variable as an explicit regressor to capture short-run adjustment processes.
+
+---
+
+# Model Specification
+
+The dynamic model extends the baseline TWFE by including the one-period lag of real expenditure growth:
+
+$$
+\text{ExpenditureGrowth}_{it} = \alpha_i + \gamma_t + 
+\beta_1 \text{ExpenditureGrowth}_{i,t-1} + 
+\beta_2 \text{GDPGrowthReal}_{it} + 
+\mathbf{X}_{it}\beta_3 + \varepsilon_{it},
+$$
+
+where \( \alpha_i \) and \( \gamma_t \) denote country and year fixed effects, respectively, and \( \mathbf{X}_{it} \) includes unemployment rate, old-age dependency ratio, public debt, and government orientation.
+
+```{r setup, include=FALSE}
+library(plm)
+library(lmtest)
+library(sandwich)
+library(dplyr)
+library(readr)
+library(kableExtra)
+```
+
+
+```{r}
+DATA_PATH <- "FINAL_ANALYSIS_DATASET_2006_2021.csv"
+
+final_dataset <- read_csv(DATA_PATH, show_col_types = FALSE) %>%
+filter(tender_year >= 2011)
+
+macro_updated <- final_dataset %>%
+group_by(buyer_country, tender_year) %>%
+summarise(
+total_expenditure_growth_real = first(total_expenditure_growth_real),
+gdp_growth_real = first(gdp_growth_real),
+unemp_rate = first(unemp_rate),
+old_dep = first(old_dep),
+gov_debt_pct_gdp = first(gov_debt_pct_gdp),
+gov_state_market = first(gov_state_market),
+.groups = "drop"
+)
+
+mp_dynamic <- macro_updated %>%
+group_by(buyer_country) %>%
+arrange(tender_year) %>%
+mutate(lag_growth = lag(total_expenditure_growth_real, 1)) %>%
+ungroup() %>%
+filter(!is.na(lag_growth))
+
+mp_dynamic_pdata <- pdata.frame(mp_dynamic, index = c("buyer_country", "tender_year"))
+```
+
+#Estimation of the Dynamic TWFE Model
+
+```{r}
+fml_dynamic <- total_expenditure_growth_real ~ lag_growth + gdp_growth_real +
+unemp_rate + old_dep + gov_debt_pct_gdp + gov_state_market + factor(tender_year)
+
+m_dynamic <- plm(fml_dynamic, data = mp_dynamic_pdata, model = "within")
+coefs_dynamic <- coeftest(m_dynamic, vcov = vcovHC(m_dynamic, type = "HC1", cluster = "group"))
+
+kable(coefs_dynamic,
+caption = "Dynamic TWFE Model Estimates (within estimator)",
+booktabs = TRUE) %>%
+kable_styling(latex_options = c("hold_position"))
+```
+
+The lagged dependent variable exhibits a negative and significant coefficient (≈ –0.14, p < 0.05), indicating a mild mean-reverting pattern in public expenditure growth.
+In other words, temporary increases in spending tend to be partially offset in the following year, consistent with fiscal discipline mechanisms and the cyclical stabilization role of public finances in the EU.
+The coefficient of real GDP growth remains positive and significant (≈ 1.1), confirming the procyclical response of public expenditure to economic growth.
+
+```{r}
+# Ramsey RESET test
+
+lm_equiv <- lm(total_expenditure_growth_real ~ lag_growth + gdp_growth_real +
+unemp_rate + old_dep + gov_debt_pct_gdp + gov_state_market + factor(tender_year),
+data = mp_dynamic)
+reset_res <- resettest(lm_equiv)
+
+# Breusch-Godfrey test for serial correlation
+
+pbg_res <- pbgtest(m_dynamic)
+
+diag_table <- data.frame(
+Test = c("Ramsey RESET", "Breusch–Godfrey (PBG)"),
+Null_Hypothesis = c("Correct functional form", "No serial correlation"),
+p_value = c(round(reset_res$p.value, 3), round(pbg_res$p.value, 3)),
+Decision = c(
+ifelse(reset_res$p.value < 0.05, "Misspecification suspected", "Functional form adequate"),
+ifelse(pbg_res$p.value < 0.05, "Serial correlation detected", "No autocorrelation")
+)
+)
+
+kable(diag_table,
+caption = "Diagnostic Tests for the Dynamic TWFE Model",
+booktabs = TRUE) %>%
+kable_styling(latex_options = c("hold_position"))
+```
+
+The RESET test confirms the adequacy of the linear functional form (p ≈ 0.86), indicating no evidence of omitted nonlinearities.
+However, the PBG test detects serial correlation (p < 0.01), suggesting that first-order dynamics may not fully capture temporal dependence — possibly reflecting multi-year fiscal adjustment processes.
+
+Note:
+In earlier specifications, the RESET and PBG tests could not be computed reliably due to the unbalanced panel structure and the presence of numerous dummy variables, which caused singularity issues in the design matrix.
+The dynamic dataset used here is internally balanced by construction, and the model specification is more parsimonious, allowing both diagnostic tests to operate correctly and produce meaningful results.
+
+# Dynamic Panel Estimation: Arellano-Bond GMM
+The dynamic TWFE model provides an intuitive first step in capturing persistence but remains affected by the Nickell bias, which leads to downward-biased estimates of the lag coefficient in short panels.
+Given the short time dimension of the dataset (T=11) and the detected serial correlation in residuals, the Arellano–Bond GMM estimator is adopted to correct for dynamic endogeneity and obtain consistent estimates under small-T, large-N conditions.
+
+```{r}
+m_ab <- pgmm(
+total_expenditure_growth_real ~ lag(total_expenditure_growth_real, 1) +
+gdp_growth_real + unemp_rate + old_dep + gov_debt_pct_gdp + gov_state_market |
+lag(total_expenditure_growth_real, 2:3) +
+lag(gdp_growth_real, 2:3) +
+old_dep + gov_state_market,
+data = mp_dynamic_pdata,
+effect = "individual",
+model = "twosteps",
+transformation = "d"
+)
+
+summary(m_ab)
+```
+
+The Arellano–Bond model yields a negative and significant lag coefficient (≈ –0.18, p ≈ 0.04), confirming a weak mean-reverting dynamic.
+The effect of real GDP growth remains positive (≈ 0.45, p ≈ 0.01), though smaller than in the TWFE model, indicating that part of the contemporaneous link between growth and expenditure reflects simultaneity rather than causal impact.
+Model validation tests confirm the internal consistency of the specification:
+- AR(1): significant (expected by design)
+- AR(2): not significant → no second-order autocorrelation
+- Sargan/Hansen: p ≈ 0.99 → valid instruments
+Together, these results support the consistency and credibility of the GMM estimator.
+
+#Conclusion
+
+The dynamic analysis reinforces the main conclusions of the static model while refining the interpretation of expenditure dynamics:
+- Public expenditure growth in the EU displays weak persistence and mean-reverting behavior, consistent with fiscal rules and budgetary correction mechanisms.
+- The response to economic activity remains procyclical, though less pronounced once simultaneity is controlled for.
+- The dynamic GMM estimation confirms that observed relationships are not artefacts of serial correlation or simultaneity but represent plausible causal mechanisms within the European fiscal framework.
+
+In summary, the baseline TWFE specification remains a valid benchmark, but incorporating dynamics through GMM provides a more nuanced and econometrically robust picture of fiscal adjustment processes.

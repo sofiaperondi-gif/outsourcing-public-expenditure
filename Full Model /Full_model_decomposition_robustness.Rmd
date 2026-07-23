@@ -1,0 +1,305 @@
+---
+title: "Full Model - Effects Decomposition and Robustness Check"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+    keep_tex: true
+geometry: "margin=2.2cm"
+fontsize: 11pt
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{caption}
+  - \captionsetup[table]{skip=5pt, font=small, labelfont=bf}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE,
+  results = 'asis'
+)
+library(fixest)
+library(kableExtra)
+options(fixest_notes = FALSE)
+
+library(tidyverse)
+library(modelsummary)
+library(car)
+```
+
+# Data Preparation
+
+The analysis relies on a country–year panel covering **EU Member States between 2011 and 2021**.  
+Procurement-level data from the original DIGIWHIST dataset were aggregated at the **buyer-country × tender-year** level.
+
+All variables were demeaned within country and log-transformed.  
+The resulting panel includes approximately 230 observations across 27 countries and 11 years.
+
+```{r load-data}
+df <- readRDS("/Users/sofiaperondi/Desktop/Tesina IV /Data analysis /Downloaded data/final_countryyear_2011_2021.Rds")
+
+```
+
+# Baseline Specification
+
+This baseline specification estimates the within-country relationship between public expenditure and outsourcing intensity, controlling for macroeconomic and institutional factors.
+The model exploits within-country, over-time variation (demeaned variables) and includes two-way fixed effects (country and year). This design captures unobserved, time-invariant country characteristics (e.g. fiscal institutions, governance) and common year shocks (e.g. EU-wide cycles).
+Standard errors are clustered by country to account for serial correlation within panels.
+The estimated coefficient on X represents the elasticity of real public expenditure with respect to changes in the average contract value, interpreted as a proxy for outsourcing intensity.
+
+```{r baseline-model, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+m_twfe <- feols(
+  ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+    corruption_control + gov_state_market + recession |
+    buyer_country + tender_year,
+  data = df, cluster = ~ buyer_country
+)
+
+etable(
+  m_twfe,
+  se = "cluster",
+  cluster = "buyer_country",
+  fitstat = ~ n + r2,
+  digits = 4,
+  tex = TRUE,
+  style.tex = style.tex("aer"),
+  title = "Baseline Model — Two-Way Fixed Effects (demeaned log public expenditure)",
+  notes = c(
+    "Dependent variable: demeaned log real public expenditure (ln_spesa_dm).",
+    "All models include country and year fixed effects, with cluster-robust standard errors by country.",
+    "Controls: unemployment rate, population density, government debt, corruption control, state–market orientation, and a recession dummy."
+  )
+) %>% cat()
+
+```
+
+# Alternative Dependent Variables
+
+To assess whether the association between outsourcing and expenditure differs across expenditure categories, the dependent variable is replaced with each major component of public spending (economic classification and COFOG functions).
+Each regression keeps the same specification, fixed effects, and control structure as the baseline.
+
+This approach allows identification of which components of public expenditure move most closely with outsourcing — for instance, whether outsourcing primarily affects intermediate consumption, compensation of employees, or capital expenditure.
+
+```{r alt-y, results='asis', echo=FALSE, warning=FALSE, message=FALSE}
+# Lista variabili alternative Y
+alt_y <- c("ln_intermediate_consumption_real_dm",
+           "ln_compensation_employees_real_dm",
+           "ln_gross_fixed_capital_real_dm",
+           "ln_public_services_dm",
+           "ln_public_order_dm",
+           "ln_economic_affairs_dm",
+           "ln_health_dm",
+           "ln_education_dm",
+           "ln_social_protection_dm")
+
+# Stima i modelli
+mods_y <- lapply(alt_y, function(y) {
+  feols(
+    as.formula(paste0(y, " ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt + ",
+                      "corruption_control + gov_state_market + recession | ",
+                      "buyer_country + tender_year")),
+    data = df, cluster = ~ buyer_country)
+})
+names(mods_y) <- gsub("^ln_|_dm$", "", alt_y)
+
+# --- suddivisione in tre blocchi per evitare overflow ---
+blocks <- list(
+  mods_y[1:3],
+  mods_y[4:6],
+  mods_y[7:9]
+)
+
+titles <- c("Alternative dependent variables (Part 1)",
+            "Alternative dependent variables (Part 2)",
+            "Alternative dependent variables (Part 3)")
+
+# --- loop per creare tre tabelle ---
+for (i in seq_along(blocks)) {
+  tab <- etable(blocks[[i]],
+                se = "cluster", cluster = "buyer_country",
+                fitstat = ~n + r2, tex = FALSE)
+
+  cat("\n\n") # spazio verticale tra tabelle
+  kable(tab, booktabs = TRUE, caption = titles[i], longtable = TRUE) %>%
+    kable_styling(latex_options = c("repeat_header", "HOLD_position", "scale_down"),
+                  full_width = FALSE, font_size = 7, position = "center") %>%
+    print()
+}
+```
+
+# Procurement Composition Controls
+This specification extends the baseline model to explicitly account for heterogeneity in procurement composition.
+
+The model adds demeaned shares of key procurement features, each measured at the country–year level:
+
+- **Contract type** — the variables prop_services_dm and prop_works_dm represent the share of service and works contracts, respectively. The omitted reference category corresponds to supplies contracts, capturing procurement of goods.
+→ Coefficients therefore measure the change in public expenditure associated with a higher relative incidence of service or works procurement, compared with supplies.
+
+- **Awarding criterion** — the variable prop_meat_dm captures the share of contracts awarded based on the “Most Economically Advantageous Tender” (MEAT) criterion. The omitted reference category is “lowest price” procedures.
+→ A positive coefficient would indicate that higher reliance on quality-based criteria correlates with higher expenditure, potentially due to more complex or service-oriented projects.
+
+- **Subcontracting** — prop_subcontracted_dm measures the share of tenders involving subcontracting. The reference group includes non-subcontracted contracts.
+→ This variable tests whether subcontracting is associated with fiscal expansion or efficiency gains in procurement processes.
+
+- **Origin of suppliers** — the variables prop_eu_bidders_dm and prop_non_eu_bidders_dm reflect the shares of contracts awarded to EU and non-EU suppliers, respectively. The omitted baseline is domestic (national) suppliers.
+→ These coefficients capture the extent to which international participation in public procurement correlates with domestic expenditure outcomes.
+
+By jointly estimating these variables, the model separates the effect of outsourcing intensity (X) from compositional and institutional shifts in procurement structure.
+
+```{r composition}
+m_comp <- feols(
+  ln_spesa_dm ~ X +
+    prop_services_dm + prop_works_dm +
+    prop_meat_dm + prop_subcontracted_dm +
+    prop_eu_bidders_dm + prop_non_eu_bidders_dm +
+    ln_unemp_rate + ln_pop_density + ln_gov_debt +
+    corruption_control + gov_state_market + recession |
+    buyer_country + tender_year,
+  data = df, cluster = ~ buyer_country
+)
+
+etable(
+  list("TWFE with Procurement Composition Controls" = m_comp),
+  se = "cluster",
+  cluster = "buyer_country",
+  fitstat = ~n + r2,
+  digits = 4,
+  tex = FALSE
+) %>%
+  kable(booktabs = TRUE,
+        caption = "Two-way Fixed Effects model including procurement composition controls") %>%
+  kable_styling(
+    latex_options = c("repeat_header", "HOLD_position", "scale_down"),
+    font_size = 7,
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  cat()
+
+
+
+```
+
+# Robustness and Validation of TWFE
+
+The final section conducts a set of robustness and validity checks to assess the plausibility of the Two-Way Fixed Effects (TWFE) design as an empirical strategy for this setting.
+
+The underlying logic is to test whether the main relationship between outsourcing (X) and public expenditure can be interpreted as meaningful and stable once key identifying assumptions of the TWFE model are relaxed or challenged.
+
+The TWFE estimator assumes that, conditional on country and year fixed effects, all countries follow parallel expenditure dynamics and that the effect of outsourcing is homogeneous across units and over time. 
+
+Each robustness specification targets one possible violation of these assumptions:
+
+- **Country-Specific Time Trends** —
+The first robustness check augments the TWFE model with country-specific linear trends in time (buyer_country[tender_year]).
+→ This captures the possibility that each country follows a distinct structural trajectory in public spending.
+If the coefficient on X remains stable, it suggests that the baseline effect is not an artifact of long-run unobserved trends.
+
+- **Two-Way Clustered Standard Errors** —
+Standard clustering by country corrects for serial correlation within panels but ignores cross-sectional dependence.
+→ By clustering simultaneously by country and year, the variance–covariance matrix becomes robust to both temporal autocorrelation and cross-country correlation (e.g. due to EU-wide fiscal shocks or synchronized policy responses).
+This ensures that inference is conservative and not overstated by correlated residuals.
+
+- **Time-Varying Heterogeneity of the Outsourcing Effect** —
+The next specification interacts outsourcing intensity (X) with year dummies.
+→ This allows the elasticity of public expenditure with respect to outsourcing to vary flexibly across years, testing the assumption of a constant treatment effect over time.
+A stable or patternless sequence of coefficients would support the validity of a homogeneous effect; systematic trends or sign changes would indicate time-specific sensitivities, such as post-crisis adjustments or procurement reforms.
+
+- **Cross-Country Heterogeneity of the Outsourcing Effect** —
+The final robustness exercise interacts outsourcing (X) with country dummies, allowing the effect to differ across national contexts while controlling for all other fixed effects and covariates.
+→ This tests whether the estimated elasticity is structurally similar across Member States or whether it depends on institutional quality, administrative capacity, or market openness.
+The reference category is Italy (ref = "IT"), meaning that each coefficient measures the deviation in sensitivity to outsourcing relative to the Italian case.
+
+Taken together, these specifications form a structured assessment of the internal validity of the TWFE framework in this macro-panel setting.
+The persistence of a positive and stable coefficient on outsourcing across these variations strengthens confidence in the interpretation of the baseline result, while heterogeneity in magnitude or significance across countries and years provides insight into the contextual contingencies of the relationship.
+
+
+```{r robustness_table, results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+
+# --- 4) ROBUSTNESS CHECKS: Testing TWFE validity and specification stability ---
+
+# 4a) Allow country-specific trends (to control for heterogeneous time slopes)
+m_trend <- feols(
+  ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+    corruption_control + gov_state_market + recession |
+    buyer_country + tender_year + buyer_country[tender_year],
+  data = df, cluster = ~ buyer_country
+)
+
+# 4b) Two-way clustering (country + year)
+m_twfe_2way <- feols(
+  ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+    corruption_control + gov_state_market + recession |
+    buyer_country + tender_year,
+  data = df,
+  vcov = ~ buyer_country + tender_year
+)
+
+# 4c) Year-varying effect of outsourcing
+m_timehet <- feols(
+  ln_spesa_dm ~ i(tender_year, X, ref = 2011) +
+    ln_unemp_rate + ln_pop_density + ln_gov_debt +
+    corruption_control + gov_state_market + recession |
+    buyer_country + tender_year,
+  data = df, cluster = ~ buyer_country
+)
+
+# 4d) Country-varying effect of outsourcing
+m_countryhet <- feols(
+  ln_spesa_dm ~ i(buyer_country, X, ref = "IT") +
+    ln_unemp_rate + ln_pop_density + ln_gov_debt +
+    corruption_control + gov_state_market + recession |
+    buyer_country + tender_year,
+  data = df, cluster = ~ buyer_country
+)
+
+etable(
+  list(
+    "Baseline TWFE"             = m_twfe,
+    "TWFE + country trends"     = m_trend,
+    "TWFE (2-way cluster)"      = m_twfe_2way,
+    "TWFE with year-interacted X" = m_timehet,
+    "TWFE with country-interacted X" = m_countryhet
+  ),
+  se = "cluster",
+  cluster = "buyer_country",
+  fitstat = ~n + r2,
+  digits = 4,
+  tex = FALSE
+) %>%
+  kable(booktabs = TRUE,
+        caption = "Robustness: Alternative TWFE specifications") %>%
+  kable_styling(
+    latex_options = c("repeat_header", "HOLD_position"),
+    font_size = 7,
+    full_width = TRUE,
+    position = "center"
+  ) %>%
+  cat()
+
+
+# Effect of outsourcing interacted with year
+iplot(m_timehet,
+      main = "Temporal heterogeneity of the outsourcing effect",
+      xlab = "Year",
+      ylab = "Estimated effect of outsourcing (demeaned log mean contract value)") 
+
+
+# Effect of outsourcing interacted with country
+iplot(m_countryhet,
+      main = "Cross-country heterogeneity of the outsourcing effect",
+      xlab = "Country (ISO code)",
+      ylab = "Estimated effect of outsourcing intensity (demeaned)") 
+
+
+```
+
+# Summary of Findings
+
+Across specifications, the baseline coefficient on `X` remains small and positive, with limited variation under alternative clustering and control strategies.  
+When interacted with **years**, the effects fluctuate modestly around zero, suggesting limited temporal heterogeneity.  
+When interacted with **countries**, substantial cross-country variation emerges, indicating that the link between outsourcing and expenditure may be context-dependent across European public administrations.
+
+

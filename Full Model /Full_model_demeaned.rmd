@@ -1,0 +1,263 @@
+---
+title: "Full Model – Demeaned Public Expenditure and Outsourcing"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+fontsize: 11pt
+---
+
+# Data, Variable Construction, and Specification
+This report replicates the analysis of the main model but uses a demeaned dependent variable for public expenditure (log primary expenditure demeaned within each country).
+This allows a stricter comparison between within-country deviations of public expenditure and outsourcing intensity, removing structural country-level differences.
+The structure, models, and tests are identical to the baseline report to enable direct comparison.
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(fixest)
+library(modelsummary)
+library(plm)
+library(car)
+library(knitr)
+library(kableExtra)
+options(knitr.table.format = "latex")
+
+setwd("~/Desktop/Tesina IV /Data analysis /Downloaded data")
+
+# Load main macro dataset and auxiliary data
+
+df <- read_csv("macro_primary_expenditure_with_growth_controls.csv", show_col_types = FALSE)
+
+expprim <- read_csv("eurostat_primary_expenditure_real.csv", show_col_types = FALSE) %>%
+select(geo, year, primary_real, gdp_deflator)
+
+final <- read_csv("FINAL_ANALYSIS_DATASET_2006_2021.csv", show_col_types = FALSE) %>%
+select(buyer_country, tender_year, gdp_nominal) %>%
+distinct()
+
+df <- df %>%
+left_join(expprim, by = c("buyer_country" = "geo", "tender_year" = "year")) %>%
+left_join(final, by = c("buyer_country", "tender_year")) %>%
+mutate(
+gdp_real = if_else(!is.na(gdp_nominal) & !is.na(gdp_deflator) & gdp_deflator > 0,
+gdp_nominal / (gdp_deflator / 100), NA_real_)
+)
+```
+
+## Transformations and Demeaned Variables
+We apply log transformations to continuous variables and demean them by country where relevant.
+The dependent variable is now log real primary expenditure demeaned within each country (ln_spesa_dm), ensuring that estimation captures within-country dynamics only.
+
+
+```{r, include=FALSE}
+df <- df %>%
+filter(!is.na(primary_real), primary_real > 0,
+!is.na(avg_contract_price), avg_contract_price > 0,
+!is.na(unemp_rate), unemp_rate > 0,
+!is.na(pop_density), pop_density > 0,
+!is.na(gov_debt_pct_gdp), gov_debt_pct_gdp > 0,
+!is.na(gdp_real), gdp_real > 0) %>%
+mutate(
+ln_spesa = log(primary_real),
+ln_valmean = log(avg_contract_price)
+) %>%
+group_by(buyer_country) %>%
+mutate(
+ln_spesa_dm = ln_spesa - mean(ln_spesa, na.rm = TRUE),
+X = ln_valmean - mean(ln_valmean, na.rm = TRUE)
+) %>%
+ungroup() %>%
+mutate(
+ln_unemp_rate = log(unemp_rate),
+ln_pop_density = log(pop_density),
+ln_gov_debt = log(gov_debt_pct_gdp),
+ln_gdp_real = log(gdp_real)
+)
+```
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+vars <- tribble(
+~Variable, ~Description, ~Transformation,
+"ln_spesa_dm", "Log real primary expenditure demeaned within country", "log(level) demeaned",
+"X", "Outsourcing intensity: log mean contract value demeaned within country", "log-level deviation",
+"ln_unemp_rate", "Unemployment rate (% labour force)", "log(level)",
+"ln_pop_density", "Population per km²", "log(level)",
+"ln_gov_debt", "Government debt as % of GDP", "log(level)",
+"corruption_control", "WGI Control of Corruption (−2.5 to +2.5)", "raw index",
+"gov_state_market", "Government state–market orientation (Manifesto index)", "raw index",
+"ln_gdp_real", "Real GDP (nominal GDP / GDP deflator)", "log(level)",
+"recession", "Recession dummy (1 = recession year)", "0/1",
+"unemp_growth", "Unemployment rate growth", "% change",
+"pop_growth", "Population density growth", "% change",
+"gdp_growth", "Real GDP growth", "% change"
+)
+
+n <- nrow(vars); cut <- ceiling(n/2)
+vars_part1 <- vars %>% slice(1:cut)
+vars_part2 <- vars %>% slice((cut+1):n)
+
+kable(vars_part1, booktabs = TRUE, caption = "Variable descriptions (part 1)") %>%
+kable_styling(font_size = 7, latex_options = c("scale_down", "HOLD_position"))
+
+kable(vars_part2, booktabs = TRUE, caption = "Variable descriptions (part 2)") %>%
+kable_styling(font_size = 7, latex_options = c("scale_down", "HOLD_position"))
+```
+
+# Baseline and Comparative Models
+We estimate four specifications to progressively account for unobserved heterogeneity: pooled OLS, country fixed effects, year fixed effects, and two-way fixed effects (TWFE). Cluster-robust errors by country address potential serial correlation within panels. The TWFE model serves as our baseline specification.
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+m_pool <- feols(
+ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+corruption_control + gov_state_market + ln_gdp_real,
+data = df, cluster = ~ buyer_country
+)
+
+m_country <- feols(
+ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+corruption_control + gov_state_market + ln_gdp_real | buyer_country,
+data = df, cluster = ~ buyer_country
+)
+
+m_year <- feols(
+ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+corruption_control + gov_state_market + ln_gdp_real | tender_year,
+data = df, cluster = ~ buyer_country
+)
+
+m_twfe <- feols(
+ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+corruption_control + gov_state_market + ln_gdp_real |
+buyer_country + tender_year,
+data = df, cluster = ~ buyer_country
+)
+
+etable(
+list(
+"Pooled OLS (no FE)" = m_pool,
+"Country FE" = m_country,
+"Year FE" = m_year,
+"Two-way FE (TWFE)" = m_twfe
+),
+se = "cluster",
+cluster = "buyer_country",
+fitstat = ~ n + r2,
+tex = TRUE,
+digits = 4,
+headers = c( "Pooled OLS (no FE)", 
+              "Country FE", 
+              "Year FE", 
+              "Two-way FE (TWFE)")
+) %>%
+  cat() 
+```
+
+# Multicollinearity
+To ensure that explanatory variables do not overlap excessively, we compute Variance Inflation Factors (VIF). All values are comfortably below standard concern thresholds (typically VIF < 5), indicating that multicollinearity is not a significant issue in the baseline specification.
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+m_noFE <- lm(
+ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density +
+ln_gov_debt + corruption_control + gov_state_market + ln_gdp_real,
+data = df
+)
+
+vif_tbl <- tibble(Variable = names(vif(m_noFE)), VIF = as.numeric(vif(m_noFE)))
+
+n_v <- nrow(vif_tbl); cut_v <- ceiling(n_v/2)
+vif_part1 <- vif_tbl %>% slice(1:cut_v)
+vif_part2 <- vif_tbl %>% slice((cut_v+1):n_v)
+
+kable(vif_part1, booktabs = TRUE, caption = "Multicollinearity (part 1)") %>%
+kable_styling(latex_options = c("scale_down", "HOLD_position"))
+
+kable(vif_part2, booktabs = TRUE, caption = "Multicollinearity (part 2)") %>%
+kable_styling(latex_options = c("scale_down", "HOLD_position"))
+```
+
+# Variance decomposition 
+We decompose each variable’s total variance into between-country and within-country components. 
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+pdata <- pdata.frame(df, index = c("buyer_country", "tender_year"))
+vars_to_check <- c("ln_spesa_dm","X","ln_unemp_rate","ln_pop_density",
+"ln_gov_debt","corruption_control","gov_state_market","ln_gdp_real")
+
+get_var_components <- function(v) {
+x <- pdata[[v]]
+means_country <- tapply(x, pdata$buyer_country, mean, na.rm = TRUE)
+between_var <- var(means_country, na.rm = TRUE)
+within_var  <- mean(tapply(x, pdata$buyer_country, var, na.rm = TRUE), na.rm = TRUE)
+total_var   <- between_var + within_var
+tibble(variable = v,
+total_var = total_var,
+between_var = between_var,
+within_var = within_var,
+between_share = between_var/total_var,
+within_share  = within_var/total_var)
+}
+
+var_summary <- bind_rows(lapply(vars_to_check, get_var_components)) %>%
+arrange(within_share)
+
+kable(var_summary %>% mutate(across(where(is.numeric), ~round(., 6))),
+booktabs = TRUE, caption = "Variance decomposition: within vs between share.") %>%
+kable_styling(full_width = FALSE, latex_options = c("scale_down", "HOLD_position"))
+```
+
+# Robustness Checks
+We re-estimate the TWFE model under two alternative specifications: one replacing real GDP with a recession dummy, and another replacing log-level controls with growth-rate measures. 
+
+The direction and magnitude of the outsourcing coefficient remain stable, supporting the robustness of our main findings.
+
+```{r robustness_table, results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+# --- Safe path for GDP growth file ---
+ctrl_file <- "~/Desktop/Tesina IV /Data analysis /Downloaded data/all_controls_complete_2006_2021.csv"
+
+if (file.exists(ctrl_file)) {
+  ctrl_gdp <- read_csv(ctrl_file, show_col_types = FALSE) %>%
+    transmute(
+      buyer_country = geo,
+      tender_year   = year,
+      gdp_growth    = gdp_growth
+    ) %>%
+    filter(tender_year >= 2011, tender_year <= 2021)
+  
+  df <- df %>%
+    left_join(ctrl_gdp, by = c("buyer_country", "tender_year"))
+} else {
+  warning("⚠️ GDP growth file not found. Skipping merge.")
+}
+
+# --- Define robustness models ---
+m_twfe_rec <- feols(
+  ln_spesa_dm ~ X + ln_unemp_rate + ln_pop_density + ln_gov_debt +
+    corruption_control + gov_state_market + recession |
+    buyer_country + tender_year,
+  data = df, cluster = ~ buyer_country
+)
+
+m_twfe_growth <- feols(
+  ln_spesa_dm ~ X + unemp_growth + pop_growth + gdp_growth +
+    gov_debt_pct_gdp + corruption_control + gov_state_market |
+    buyer_country + tender_year,
+  data = df, cluster = ~ buyer_country
+)
+
+# --- Robustness etable in LaTeX ---
+etable(
+  list(
+    "Baseline (TWFE log GDP)"   = m_twfe,
+    "TWFE + Recession Dummy"    = m_twfe_rec,
+    "TWFE with Growth Controls" = m_twfe_growth
+  ),
+  se = "cluster",
+  cluster = "buyer_country",
+  fitstat = ~ n + r2,
+  digits = 4,
+  tex = TRUE,
+  title = "Robustness Check: Two-way Fixed Effects models"
+)
+```

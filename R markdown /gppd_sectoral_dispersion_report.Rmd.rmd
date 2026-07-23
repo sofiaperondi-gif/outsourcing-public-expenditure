@@ -1,0 +1,131 @@
+---
+title: "GPPD – Sectoral Dispersion & Summary Analysis"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_float: true
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.width = 9, fig.height = 5, dpi = 300
+)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(lme4)
+library(knitr)
+
+out_dir <- "outputs"
+```
+
+This report provides a summary analysis of the Global Public Procurement Dataset (GPPD) for the EU-27 countries between 2011-2021. The analysis focuses on the distribution and value of public contracts across three main sectors: Services, Supplies, and Works. By examining sectoral concentration, average contract values, and temporal trends, this report aims to uncover patterns in how EU member states allocate public funds and the underlying structure of the public procurement market.
+
+Contracts by sector: 
+
+```{r}
+sector_dist <- fread(file.path(out_dir, "sector_distribution_clean.csv"))
+knitr::kable(sector_dist,
+             caption = "Table 1. Sector Distribution of Contracts (EU-27, 2011–2021)")
+```
+
+The Supplies sector dominates EU public procurement, accounting for over half (57.2%) of all contracts and a staggering 76.8% of the total value. This indicates a market heavily skewed towards the purchase of goods. In contrast, the Services sector, while representing 29.1% of contract volume, accounts for only 17.0% of the total value, suggesting a higher number of lower-value service contracts. The Works sector (construction and public works) is the smallest by count (13.6%) and value (6.2%), but its contracts have a significant average value, second only to Supplies.
+
+
+Variance component:
+
+```{r}
+vc <- fread(file.path(out_dir, "variance_components_clean.csv"))
+knitr::kable(vc,
+             caption = "Table 2. Variance Components in Log Contract Values")
+```
+
+To understand what drives the differences in contract values, a variance decomposition was conducted. The analysis reveals that the single most important factor is the buyer's country, explaining 22.75% of the variance. This highlights significant national differences in procurement practices, market structures, or budget sizes. The sector of the contract itself explains 8.38%, confirming that contract values systematically differ between Services, Supplies, and Works. The year of the tender explains a smaller portion (4.96%), suggesting that temporal shocks (e.g., financial crises) have a moderate, but present, impact. The large Residual (63.91%) indicates that over half of the variation is due to factors not captured here, such as the specific nature of the contract, the contracting authority, or competition levels.
+
+Contracts by sector
+
+```{r}
+contracts_by_sector <- fread(file.path(out_dir, "contracts_by_sector_clean.csv"))
+ggplot(contracts_by_sector, aes(x = Sector, y = `Number of Contracts`, fill = Sector)) +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Number of Contracts by Sector (EU-27, 2011–2021)",
+       x = "Sector", y = "Contracts") +
+  theme_minimal()
+```
+
+Total Value by Sector: 
+
+```{r}
+value_by_sector <- fread(file.path(out_dir, "value_by_sector_clean.csv"))
+ggplot(value_by_sector, aes(x = Sector, y = `Total Value (Billion EUR)`, fill = Sector)) +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Total Value of Contracts by Sector (EU-27, 2011–2021)",
+       x = "Sector", y = "Total Value (Billion EUR)") +
+  theme_minimal()
+```
+
+Sectoral Concentration by Country
+
+```{r}
+sector_conc <- fread(file.path(out_dir, "sector_concentration_clean.csv"))
+knitr::kable(head(sector_conc, 15),
+             caption = "Table 3. Sectoral Concentration (Top 15 Countries by HHI)")
+```
+
+The Herfindahl-Hirschman Index (HHI) measures market concentration. An HHI above 2,500 is generally considered highly concentrated. The data shows that Bulgaria (BG) has an extremely high HHI of 7,951, with Supplies making up 88.8% of its procurement, indicating a heavily concentrated market. Countries like Czechia (CZ), Denmark (DK), and France (FR) also show high concentration, with a single sector holding over 65% of the market share.
+
+
+Annual Sector Trends: 
+
+```{r}
+annual_sector <- fread(file.path(out_dir, "annual_contracts_by_sector_clean.csv"))
+ggplot(annual_sector,
+       aes(x = Year, y = `Share of Contracts (%)`/100, color = Sector)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = percent) +
+  labs(title = "Annual Sectoral Shares of Contracts (EU-27)",
+       x = "Year", y = "Share of Contracts") +
+  theme_minimal()
+```
+
+This density plot shows the distribution of log-transformed contract values for the top 10 EU countries. The multi-peaked shapes for most countries suggest that their procurement is not a single, homogeneous market but is composed of distinct "sub-markets". The position and shape of the curves vary significantly by country, reflecting the national-level variance identified in Table 2.
+
+```{r}
+include_graphics(file.path(out_dir, "plot_distribution_values_top10_box.png"))
+```
+
+Average Contract Values by Country × Sector
+
+```{r}
+avg_price_cs <- fread(file.path(out_dir, "avg_price_by_country_sector_clean.csv"))
+knitr::kable(head(avg_price_cs, 20),
+             caption = "Table 4. Average Contract Values by Country × Sector (Top 20 Rows)")
+```
+
+This detailed table reveals striking national differences in the scale of procurement within the same sector. For instance:
+
+Works in Bulgaria (BG) have a very high mean value (€27.31 million), far exceeding that of Germany (DE) (€2.97 million).
+Services in Czechia (CZ) are, on average, an order of magnitude larger (€24.00 million) than in most other countries.
+
+The median value is consistently much lower than the mean across all sectors and countries, indicating that procurement value distributions are highly right-skewed. A small number of very large contracts pull the average up, while the typical (median) contract is significantly smaller
+
+```{r}
+
+# Figure 1. Sector shares over time
+include_graphics(file.path(out_dir, "plot_annual_sector_shares.png"))
+
+# Figure 2. Distribution of contract values (Top-10 EU countries)
+include_graphics(file.path(out_dir, "plot_distribution_values_top10_box.png"))
+
+# Figure 3. Variance share (M3 model)
+include_graphics(file.path(out_dir, "plot_variance_share_M3.png"))
+
+```
+

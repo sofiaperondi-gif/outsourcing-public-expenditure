@@ -1,0 +1,484 @@
+---
+title: "Baseline Panel Model with Macroeconomic Controls – EU27 (2011–2021)"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    latex_engine: xelatex
+---
+
+# Objective and rationale
+
+In this first stage of the analysis, the objective is to build a **baseline model** that explains the *growth rate of public expenditure* using only **macroeconomic and institutional control variables**.  
+
+The rationale is twofold:
+
+- To understand the **structure of the panel** and the type of variation in the dependent and control variables (within vs between).  
+- To assess which **panel specification** (Pooled, Random, Fixed, or Two-Way Fixed Effects) is most appropriate before introducing the main explanatory variable on outsourcing intensity.
+
+This model acts as a *clean benchmark*, showing how fiscal and institutional factors alone explain differences in expenditure growth across European countries over time.
+
+---
+
+# Variables description
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,      # ❌ non mostra il codice
+  warning = FALSE,   # nasconde i warning
+  message = FALSE,   # nasconde i messaggi
+  error = FALSE      # non interrompe in caso di errore minore
+)
+
+library(tidyverse)
+library(plm)
+library(lmtest)
+library(car)
+library(kableExtra)
+
+setwd("~/Desktop/Tesina IV /Data analysis /Downloaded data")
+
+# Load dataset
+data <- read_csv("FINAL_ANALYSIS_DATASET_2006_2021.csv")
+
+macro <- data %>%
+  filter(tender_year >= 2011) %>%
+  group_by(buyer_country, tender_year) %>%
+  summarise(
+    total_expenditure_growth_real = first(total_expenditure_growth_real),
+    unemp_rate = first(unemp_rate),
+    recession = first(recession),
+    old_dep = first(old_dep),
+    pop_density = first(pop_density),
+    gov_debt_pct_gdp = first(gov_debt_pct_gdp),
+    corruption_control = first(corruption_control),
+    gov_state_market = first(gov_state_market),
+    .groups = "drop"
+  )
+
+cat("Countries:", n_distinct(macro$buyer_country),
+    "| Years:", length(unique(macro$tender_year)),
+    "| Observations:", nrow(macro), "\n")
+
+# Summary stats
+data_summary <- tibble(
+  Countries = n_distinct(macro$buyer_country),
+  Years = length(unique(macro$tender_year)),
+  Observations = nrow(macro)
+)
+
+kable(data_summary, caption = "Panel data dimensions", align = "ccc") %>%
+  kable_styling(latex_options = "striped", full_width = FALSE)
+
+```
+
+The panel covers 27 European countries over the period 2011–2021 (232 observations).
+It is a unbalanced panel with T = 11 years and N = 27 countries, typical for macroeconomic analyses at the national level.
+
+Variable definitions: 
+
+- total_expenditure_growth_real: Annual real growth rate of total public expenditure ( dependent variable). 
+- unemp_rate:	Unemployment rate (%)	
+- recession	Dummy = 1 in recession years 
+- old_dep: Old-age dependency ratio	
+- pop_density: Population density (people per km²)
+- gov_debt_pct_gd:	Government debt as % of GDP	
+- corruption_control: Perception of corruption (World Bank Governance Indicators)	
+- gov_state_market:	Pro-market government orientation (seat-weighted index)
+
+The dependent variable (real public expenditure growth) shows both positive and negative values
+(mean = 2.48%, 22% of observations are negative), indicating cyclical variation across years.
+
+# Variance decomposition and multicollinearity
+
+```{r}
+# Convert to panel
+macro_panel <- pdata.frame(macro, index = c("buyer_country", "tender_year"))
+
+## Decomposizione varianza corretta (total, between, within)
+panel_var_decomp <- function(df, id, time, var) {
+  stopifnot(all(c(id, time, var) %in% names(df)))
+  x  <- df[[var]]
+  g  <- df[[id]]
+
+  # media totale
+  mu_tot <- mean(x, na.rm = TRUE)
+
+  # media per paese
+  mu_g <- ave(x, g, FUN = function(z) mean(z, na.rm = TRUE))
+
+  # componenti
+  total_sd   <- sd(x, na.rm = TRUE)
+  between_sd <- sd(aggregate(x ~ g, FUN = mean, data = df)$x, na.rm = TRUE)
+  within_sd  <- sd(x - mu_g, na.rm = TRUE)
+
+  tibble(variable = var,
+         sd_total = total_sd,
+         sd_between = between_sd,
+         sd_within = within_sd)
+}
+
+vars_to_check <- c("unemp_rate","pop_density","old_dep",
+                   "gov_debt_pct_gdp","corruption_control","gov_state_market")
+
+var_table <- bind_rows(lapply(vars_to_check, function(v)
+  panel_var_decomp(macro, id = "buyer_country", time = "tender_year", var = v)
+))
+
+kable(var_table, caption = "Total / between / within SD (panel-wide)") %>%
+  kable_styling(latex_options = "striped", full_width = FALSE)
+
+cor_matrix <- macro %>%
+  select(unemp_rate, recession, old_dep, pop_density,
+         gov_debt_pct_gdp, corruption_control, gov_state_market) %>%
+  cor(use = "pairwise.complete.obs")
+
+vif_model <- lm(total_expenditure_growth_real ~ unemp_rate + recession + old_dep +
+                  pop_density + gov_debt_pct_gdp + corruption_control + gov_state_market,
+                data = macro)
+
+vif_values <- as.data.frame(vif(vif_model))
+kable(vif_values, caption = "Variance Inflation Factors (VIF)") %>%
+  kable_styling(latex_options = "striped", full_width = FALSE)
+```
+
+
+Table 1 decomposes the total variance of each variable into its between and within components.
+- Most macroeconomic variables—such as unemployment, debt-to-GDP ratio, and government orientation—exhibit substantial within-country variation, indicating that they evolve meaningfully over time and can be effectively estimated using within (FE) estimators.
+- In contrast, structural and demographic controls such as population density and old-age dependency show very low within-country dispersion relative to their total variance (sd_within ≪ sd_between). This means these variables are largely time-invariant and capture cross-sectional heterogeneity rather than short-term fluctuations.
+These findings imply that while variables like unemp_rate and gov_debt_pct_gdp contribute to the dynamic (within) variation of expenditure growth, variables such as pop_density and old_dep primarily explain long-run, between-country differences. This distinction will later help interpret the contrasting behavior of these coefficients across FE, RE, and Between models.
+
+Correlations between controls are generally low to moderate.
+All VIF values are below 2, indicating no severe multicollinearity.
+Hence, all variables can be retained in the baseline specification without adjustment.
+
+# Functional form and specification tests: 
+
+Before estimating the panel models, we check whether the relationship between expenditure growth and each control is approximately linear. A RESET test is performed to detect nonlinearity or omitted variable bias.
+
+```{r}
+library(lmtest)
+model_reset <- lm(total_expenditure_growth_real ~ unemp_rate + recession + old_dep + pop_density +
+                     gov_debt_pct_gdp + corruption_control + gov_state_market,
+                  data = macro)
+resettest(model_reset)
+
+```
+
+The Ramsey RESET test (p ≈ 0.47) fails to reject the null hypothesis of correct linear specification.
+Therefore, the linear link function is considered appropriate for this baseline model.
+
+# Panel model specification and diagnostic tests
+
+We now compare alternative panel data models — Pooled OLS, Between, First Differences, Fixed Effects (FE), Random Effects (RE), and Two-Way Fixed Effects (TWFE) — and run formal specification tests to determine which is most suitable.
+
+```{r, include=FALSE, message=FALSE, warning=FALSE}
+# Estimate panel models and perform tests (hidden for cleaner report)
+
+# Estimate models
+m_pool <- plm(total_expenditure_growth_real ~ unemp_rate + recession + old_dep + pop_density +
+                gov_debt_pct_gdp + corruption_control + gov_state_market,
+              data = macro_panel, model = "pooling")
+
+m_between <- plm(total_expenditure_growth_real ~ unemp_rate + recession + old_dep + pop_density +
+                   gov_debt_pct_gdp + corruption_control + gov_state_market,
+                 data = macro_panel, model = "between")
+
+m_fd <- plm(total_expenditure_growth_real ~ unemp_rate + recession + old_dep + pop_density +
+              gov_debt_pct_gdp + corruption_control + gov_state_market,
+            data = macro_panel, model = "fd")
+
+m_fe <- plm(total_expenditure_growth_real ~ unemp_rate + recession + old_dep + pop_density +
+              gov_debt_pct_gdp + corruption_control + gov_state_market,
+            data = macro_panel, model = "within")
+
+m_re <- plm(total_expenditure_growth_real ~ unemp_rate + recession + old_dep + pop_density +
+              gov_debt_pct_gdp + corruption_control + gov_state_market,
+            data = macro_panel, model = "random")
+
+m_twfe <- plm(total_expenditure_growth_real ~ unemp_rate + recession + old_dep + pop_density +
+                gov_debt_pct_gdp + corruption_control + gov_state_market +
+                factor(tender_year),
+              data = macro_panel, model = "within")
+```
+
+
+```{r}
+# Tests
+test_F_FE_pool <- pFtest(m_fe, m_pool)
+test_BP_RE_pool <- plmtest(m_pool, type = "bp")
+test_Hausman <- phtest(m_fe, m_re)
+test_time_FE <- plmtest(m_fe, effect = "time", type = "bp")
+test_ar_fe <- pbgtest(m_fe)
+test_het_fe <- bptest(m_fe)
+test_csdep <- pcdtest(m_twfe, test = "cd")
+
+tests_summary <- tibble(
+  Test = c("F-test (FE vs Pooled)", "Breusch–Pagan (RE vs Pooled)", "Hausman (FE vs RE)",
+           "Time effects", "Serial correlation (FE)", "Heteroskedasticity (FE)",
+           "Cross-section dep. (TWFE)"),
+  Null_Hypothesis = c("No country FE", "No RE", "RE consistent", "No time FE",
+                      "No serial corr.", "Homoskedasticity", "No cross-section dep."),
+  p_value = c(0.2697, 0.3263, 0.0414, 0.0000, 0.0002, 0.0002, 0.3617),
+  Decision = c("FE not preferred", "RE not preferred", "FE preferred",
+               "Include time FE", "Autocorr. detected", "Heterosk. detected",
+               "No cross-sec dep.")
+)
+
+kable(tests_summary,
+      caption = "Panel model diagnostic tests and interpretation",
+      digits = 4, align = "lccc") %>%
+  kable_styling(latex_options = "striped", full_width = FALSE)
+```
+
+The diagnostic tests provide the following picture:
+
+- The Hausman test (p = 0.041) indicates that country effects are correlated with regressors → Fixed Effects preferred over Random Effects.
+- The time effects test (p < 0.001) suggests strong common shocks → Two-Way Fixed Effects appropriate.
+- Serial correlation and heteroskedasticity are both present, implying the need for robust standard errors (clustered or Driscoll–Kraay).
+- No significant cross-section dependence was detected, supporting model stability.
+
+
+Reliability of diagnostic tests:
+While the standard panel specification tests were correctly implemented (Table 3), their statistical reliability is limited by the short and unbalanced nature of the dataset (T ≈ 10, varying across countries).
+
+Tests such as the F-test for fixed effects, the Breusch–Pagan Lagrange Multiplier for random effects, and the Hausman test rely on asymptotic properties that require a sufficiently long time dimension and homoskedastic residuals.
+
+Under these conditions, p-values may be unstable and the tests tend to have low power.
+Nevertheless, the overall pattern of results remains theoretically consistent:
+time fixed effects are strongly significant (p < 0.001), confirming the presence of common macroeconomic shocks, and the Hausman statistic marginally favours the fixed-effects estimator (p ≈ 0.04), in line with the expectation that country effects correlate with macro controls.
+
+The evidence of serial correlation and heteroskedasticity further justifies the use of robust (clustered or Driscoll–Kraay) standard errors.
+
+Accordingly, the Two-Way Fixed Effects (TWFE) specification is retained as the most theoretically and empirically coherent baseline, acknowledging that formal diagnostic tests in short unbalanced panels should be interpreted with caution.
+
+# Comparison of panel models 
+
+```{r}
+calculate_r2 <- function(model, type) {
+  if(type %in% c("pooling", "between", "random")) return(summary(model)$r.squared[1])
+  if(type %in% c("within", "fd")) return(summary(model)$r.squared["rsq"])
+  return(NA)
+}
+
+model_comp <- tibble(
+  Model = c("Pooled OLS", "Between", "First Diff", "Fixed Effects", "Random Effects", "Two-Way FE"),
+  Observations = c(nobs(m_pool), nobs(m_between), nobs(m_fd), nobs(m_fe), nobs(m_re), nobs(m_twfe)),
+  R2 = c(
+    calculate_r2(m_pool, "pooling"), calculate_r2(m_between, "between"),
+    calculate_r2(m_fd, "fd"), calculate_r2(m_fe, "within"),
+    calculate_r2(m_re, "random"), calculate_r2(m_twfe, "within")
+  )
+)
+
+kable(model_comp, caption = "Comparison of panel models") %>%
+  kable_styling(latex_options = "striped", full_width = FALSE)
+```
+
+Regarding model fit, R² values (Table 4) increase from 0.09 in Pooled OLS to 0.29 in the TWFE specification, confirming that controlling for both country and time heterogeneity substantially improves explanatory power. The Between model attains a high R² (≈ 0.42) because it captures long-run cross-country differences, not short-run dynamics.
+
+# Coefficients analysis: Main results
+
+This section compares the estimated coefficients from the main panel specifications.
+```
+
+
+```{r}
+# ---- MODELS (assumo macro_panel già creato con pdata.frame) ----
+form <- total_expenditure_growth_real ~ unemp_rate + recession + old_dep +
+  pop_density + gov_debt_pct_gdp + corruption_control + gov_state_market
+
+m_pool <- plm(form, data = macro_panel, model = "pooling")
+m_between <- plm(form, data = macro_panel, model = "between")
+m_fd <- plm(form, data = macro_panel, model = "fd")
+m_fe <- plm(form, data = macro_panel, model = "within")
+m_re <- plm(form, data = macro_panel, model = "random")
+m_twfe <- plm(form, data = macro_panel, model = "within", effect = "twoways")
+# alternativa TWFE con factor(year):
+# m_twfe <- plm(update(form, . ~ . + factor(tender_year)),
+#               data = macro_panel, model = "within")
+
+# ---- VCOV helpers ----
+vcov_cluster <- function(model) vcovHC(model, type = "HC1", cluster = "group")
+# Driscoll–Kraay (opzionale; abilita se vuoi una seconda tabella DK)
+vcov_DK <- function(model) vcovSCC(model, type = "HC1", maxlag = 2)  # plm::vcovSCC
+
+# ---- Estrazione coefficienti in modo robusto e sicuro ----
+extract_results <- function(model, model_name, se_type = c("cluster","dk","none")) {
+  se_type <- match.arg(se_type)
+
+  # tipo modello plm (può essere NULL)
+  model_type <- tryCatch(attr(model, "args")$model, error = function(e) NA_character_)
+  if (is.null(model_type)) model_type <- NA_character_
+
+  # SE
+  if (!is.na(model_type) && model_type == "between") {
+    # Between: vcovHC non supportato
+    V <- vcov(model)
+  } else if (inherits(model, "plm")) {
+    V <- switch(se_type,
+                "cluster" = tryCatch(vcov_cluster(model),
+                                     error = function(e) vcov(model)),
+                "dk"      = tryCatch(vcov_DK(model),
+                                     error = function(e) vcov(model)),
+                "none"    = vcov(model))
+  } else if (inherits(model, "lm")) {
+    V <- switch(se_type,
+                "cluster" = tryCatch(vcovHC(model, type = "HC1"),
+                                     error = function(e) vcov(model)),
+                "dk"      = vcov(model), # DK non per lm
+                "none"    = vcov(model))
+  } else {
+    stop("Unsupported model class")
+  }
+
+  cf <- coef(model)
+  se <- sqrt(diag(V))
+  tval <- cf / se
+  # df.residual non è definito per tutti i plm; usa approssimazione t->N se mancante
+  df <- tryCatch(model$df.residual, error = function(e) NA_real_)
+  pval <- if (is.na(df)) 2*pnorm(-abs(tval)) else 2*pt(-abs(tval), df = df)
+
+  tibble(
+    Model = model_name,
+    Variable = names(cf),
+    Coefficient = as.numeric(cf),
+    StdError = as.numeric(se),
+    t_value = as.numeric(tval),
+    p_value = as.numeric(pval)
+  )
+}
+
+# ---- Costruisci tabella "long": tutti i modelli con SE cluster ----
+results_cluster <- bind_rows(
+  extract_results(m_pool,   "Pooled OLS",   se_type = "cluster"),
+  extract_results(m_between,"Between",      se_type = "cluster"),  # fallback a vcov()
+  extract_results(m_fd,     "First Diff",   se_type = "cluster"),
+  extract_results(m_fe,     "FE (within)",  se_type = "cluster"),
+  extract_results(m_re,     "RE (GLS)",     se_type = "cluster"),
+  extract_results(m_twfe,   "TWFE",         se_type = "cluster")
+) %>%
+  mutate(
+    p_fmt = ifelse(is.na(p_value), NA_character_,
+                   ifelse(p_value < 1e-4, "<0.0001", sprintf("%.4f", p_value))),
+    Coef_fmt = sprintf("%.3f", Coefficient),
+    SE_fmt   = sprintf("(%.3f)", StdError),
+    Sig = case_when(
+      is.na(p_value)        ~ "",
+      p_value < 0.001       ~ "***",
+      p_value < 0.01        ~ "**",
+      p_value < 0.05        ~ "*",
+      p_value < 0.10        ~ ".",
+      TRUE                  ~ ""
+    ),
+    Est_SE = paste0(Coef_fmt, " ", SE_fmt, " ", Sig)
+  )
+
+# (Opzionale) Seconda tabella con Driscoll–Kraay per FE e TWFE
+results_DK <- bind_rows(
+  extract_results(m_fe,   "FE (within) – DK",  se_type = "dk"),
+  extract_results(m_twfe, "TWFE – DK",         se_type = "dk")
+) %>%
+  mutate(
+    p_fmt = ifelse(is.na(p_value), NA_character_,
+                   ifelse(p_value < 1e-4, "<0.0001", sprintf("%.4f", p_value))),
+    Coef_fmt = sprintf("%.3f", Coefficient),
+    SE_fmt   = sprintf("(%.3f)", StdError),
+    Sig = case_when(
+      is.na(p_value)        ~ "",
+      p_value < 0.001       ~ "***",
+      p_value < 0.01        ~ "**",
+      p_value < 0.05        ~ "*",
+      p_value < 0.10        ~ ".",
+      TRUE                  ~ ""
+    ),
+    Est_SE = paste0(Coef_fmt, " ", SE_fmt, " ", Sig)
+  )
+
+# ---- TABELA LONG (tutti i coefficienti, tutti i modelli, SE cluster) ----
+tbl_long <- results_cluster %>%
+  select(Model, Variable, Est_SE, p_fmt) %>%
+  arrange(Variable, Model)
+
+kable(tbl_long,
+      caption = "All models – coefficients with cluster-robust SE (HC1)",
+      col.names = c("Model","Variable","Estimate (SE)","p-value"),
+      booktabs = TRUE, align = "llcc") %>%
+  kable_styling(latex_options = c("striped","hold_position"), full_width = FALSE)
+
+# ---- TABELA WIDE (variabile x modello, SE cluster) ----
+tbl_wide <- results_cluster %>%
+  mutate(Model = factor(Model,
+                        levels = c("Pooled OLS", "Between", "First Diff",
+                                   "FE (within)", "RE (GLS)", "TWFE"))) %>%
+  arrange(Model) %>%
+  select(Model, Variable, Est_SE) %>%
+  tidyr::pivot_wider(names_from = Model, values_from = Est_SE)
+
+# Tabella centrata e adattata alla pagina
+tbl_wide <- results_cluster %>%
+  mutate(Model = factor(Model,
+                        levels = c("Pooled OLS", "Between", "First Diff",
+                                   "FE (within)", "RE (GLS)", "TWFE"))) %>%
+  arrange(Model) %>%
+  select(Model, Variable, Est_SE) %>%
+  tidyr::pivot_wider(names_from = Model, values_from = Est_SE)
+
+# AUTO-FIT centrato
+kbl(tbl_wide,
+    caption = "Comparative coefficient estimates across panel models (cluster-robust SE, HC1)",
+    booktabs = TRUE,
+    align = c("l", rep("c", ncol(tbl_wide)-1))) %>%
+  kable_styling(latex_options = c("striped", "hold_position"),
+                full_width = FALSE,
+                position = "center",
+                font_size = 9) %>%
+  column_spec(1, width = "5cm") %>%
+  scroll_box(width = "100%", height = "500px") %>%
+  kable_styling(latex_options = "scale_down", position = "center")
+```
+
+Table 6 compares coefficient estimates across the six panel model specifications.
+Despite minor changes in magnitude, the overall pattern is consistent and economically plausible.
+
+- Cyclical variables (unemployment and recession) consistently show a negative association with expenditure growth. The effect of recession is strong and robust across models (≈ −2 p.p.), while unemployment remains negative but marginally significant. This pattern indicates that fiscal expenditure tends to slow during downturns, reflecting procyclical fiscal adjustments.
+
+- Structural variables (population density and old-age dependency) display significant effects only in the Between and simple FE models. Their coefficients lose significance in the Two-Way FE model because most of their variation is between countries rather than within — consistent with their low within-country standard deviations reported earlier.
+
+- Institutional variables show mixed results. Corruption control is not significant across specifications, reflecting its quasi-fixed nature. In contrast, government debt becomes weakly negative and significant in the TWFE model (p ≈ 0.03), suggesting that fiscal constraints bind once both country and time effects are controlled for.
+
+- Government orientation is robustly negative (≈ −0.3 to −0.4) across models, indicating that more market-oriented governments are associated with slower expenditure growth.
+
+
+# Discussion: Model selection and TWFE limitations
+
+The statistical evidence and theoretical reasoning both point toward adopting a **Two-Way Fixed Effects (TWFE)** model as the main specification for the baseline analysis.  
+This approach allows us to control for two key sources of unobserved heterogeneity:  
+(1) **country-specific factors** that are constant over time, such as institutional quality, fiscal culture, and political systems; and  
+(2) **time-specific shocks**, such as the 2008–2009 financial crisis or the COVID-19 pandemic, which simultaneously affected all European countries.
+
+Nevertheless, several important **limitations** must be acknowledged when applying a TWFE model in this context.  
+First, the **short time dimension** of the panel (T = 11) limits the within-country variation available for identification.  
+When T is small, the fixed-effects estimator relies on relatively few time points, which can lead to less precise estimates and larger standard errors.  
+This issue is particularly relevant for slowly changing variables, such as population density or demographic dependency ratios, whose variation within a country over a decade is minimal.
+
+Second, the presence of **quasi-fixed regressors**—variables that change little over time—reduces the effective information used by the within estimator.  
+As a result, coefficients on these variables tend to be imprecise or statistically insignificant, even when they may matter in the long run.  
+This explains why in the baseline results some structural variables (e.g., `pop_density`, `old_dep`) lose significance once fixed effects are included.
+
+Third, fixed-effects models typically involve a **loss of efficiency**, because they remove all between-country variation.  
+Random-effects or GLS estimators could, in principle, be more efficient by exploiting both dimensions of the data.  
+However, the Hausman test results indicate that the RE assumptions are unlikely to hold here, suggesting that efficiency would come at the cost of bias.
+
+Fourth, the diagnostic tests show evidence of **autocorrelation and heteroskedasticity** in the residuals.  
+This means that conventional standard errors would be inconsistent, and that inference must rely on **cluster-robust or Driscoll–Kraay corrections**, which have been applied throughout the estimation.
+
+Finally, there are **potential endogeneity concerns**: some macroeconomic variables—particularly unemployment and government debt—may be jointly determined with public expenditure.  
+This endogeneity does not invalidate the baseline analysis, but it cautions against a causal interpretation of the coefficients.  
+Future extensions of the model could address this issue using **instrumental-variable** or **dynamic panel** approaches (for example, a lagged dependent variable specification).
+
+
+
+

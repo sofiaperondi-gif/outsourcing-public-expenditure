@@ -1,0 +1,203 @@
+---
+title: "EU-27 Public Expenditure Structure Analysis: Comprehensive Report (2006-2021)"
+author: "Exploratory Data Analysis"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(tidyr)
+library(knitr)
+
+# Color scheme for consistent visuals
+theme_set(theme_minimal())
+```
+
+This comprehensive report analyzes the structure and dynamics of public expenditure across EU-27 countries from 2006 to 2021. The analysis examines both economic classification (P2, D1, P5) and functional composition (COFOG) of government spending, with particular focus on outsourcing patterns and expenditure dynamics.
+
+
+```{r}
+# Load the pre-generated results
+setwd("/Users/sofiaperondi/Desktop/Tesina IV /Data selection and summary analysis /Downloaded data")
+out_dir <- "outputs_eurostat_comprehensive"
+
+# Load summary statistics
+summary_stats <- fread(file.path(out_dir, "summary_statistics.csv"))
+growth_year <- fread(file.path(out_dir, "growth_rates_p2_d1_p5.csv"))
+composition_year <- fread(file.path(out_dir, "composition_economic_type.csv"))
+cofog_long <- fread(file.path(out_dir, "composition_cofog.csv"))
+substitution_trends <- fread(file.path(out_dir, "substitution_trends.csv"))
+country_variation <- fread(file.path(out_dir, "country_variation_2021.csv"))
+```
+
+```{r}
+cat("**Data Sources and Processing:**\n\n")
+cat("• **Source**: Eurostat gov_10a_main dataset\n")
+cat("• **Period**: 2006-2021 (16 years)\n")
+cat("• **Coverage**: 27 EU member states\n")
+cat("• **Values**: Real terms (2010 prices, millions of euros)\n")
+cat("• **Cleaning**: Removed duplicates and extreme values\n")
+cat("• **Growth Rates**: Proper year-over-year calculation\n\n")
+
+cat("**Expenditure Components Analyzed:**\n\n")
+cat("• **P2 (Intermediate Consumption)**: Government procurement and outsourcing\n")
+cat("• **D1 (Compensation of Employees)**: Public sector wages and salaries\n")
+cat("• **P5 (Gross Fixed Capital)**: Public investment in infrastructure\n")
+cat("• **COFOG**: Functional classification by policy area\n")
+```
+
+```{r}
+# Create a formatted summary table
+metrics_table <- data.frame(
+  Metric = c(
+    "Intermediate Consumption (P2) Average Share",
+    "Compensation of Employees (D1) Average Share", 
+    "Gross Fixed Capital (P5) Average Share",
+    "P2/D1 Ratio (Outsourcing Intensity)",
+    "P2 Average Annual Growth",
+    "D1 Average Annual Growth", 
+    "P5 Average Annual Growth",
+    "P2-D1 Growth Correlation"
+  ),
+  Value = c(
+    paste0(round(summary_stats[Metric == "P2_Avg_Share", Value], 1), "%"),
+    paste0(round(summary_stats[Metric == "D1_Avg_Share", Value], 1), "%"),
+    paste0(round(summary_stats[Metric == "P5_Avg_Share", Value], 1), "%"),
+    round(summary_stats[Metric == "P2_D1_Correlation", Value], 3),
+    paste0(round(summary_stats[Metric == "P2_Avg_Growth", Value], 2), "%"),
+    paste0(round(summary_stats[Metric == "D1_Avg_Growth", Value], 2), "%"),
+    paste0(round(summary_stats[Metric == "P5_Avg_Growth", Value], 2), "%"),
+    round(summary_stats[Metric == "P2_D1_Correlation", Value], 3)
+  ),
+  Interpretation = c(
+    "Procurement share of total expenditure",
+    "Public employment costs share",
+    "Public investment share", 
+    "Balance between outsourcing and public employment",
+    "Annual growth in procurement spending",
+    "Annual growth in public employment costs",
+    "Annual growth in public investment",
+    "Relationship between P2 and D1 growth"
+  )
+)
+
+kable(metrics_table, caption = "Key Expenditure Metrics (EU-27 Average, 2006-2021)")
+```
+
+```{r}
+ggplot(growth_year[!is.na(growth)], aes(x = year, y = growth, color = variable)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_y_continuous(labels = percent_format(scale = 1)) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02", "#7570b3")) +
+  labs(
+    title = "Average Annual Growth Rate of Expenditure Components (EU-27, 2006–2021)",
+    x = "Year", y = "Growth Rate (%)", 
+    color = "Component"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+ggplot(composition_year, aes(x = year, y = share, fill = component)) +
+  geom_area(position = "fill", alpha = 0.8) +
+  scale_y_continuous(labels = percent) +
+  scale_fill_manual(values = c("#1b9e77", "#d95f02", "#7570b3")) +
+  labs(
+    title = "Composition of Public Expenditure by Economic Type (EU-27, 2006–2021)",
+    x = "Year", y = "Share of Total Expenditure", 
+    fill = "Component"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+```{r}
+ggplot(composition_year, aes(x = year, y = share, color = component)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2.5) +
+  scale_y_continuous(labels = percent) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02", "#7570b3")) +
+  labs(
+    title = "Expenditure Shares by Economic Type - Line Chart View",
+    subtitle = "EU-27 Average (2006-2021)",
+    x = "Year", y = "Share of Total Expenditure", 
+    color = "Component"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+```{r}
+ggplot(cofog_long, aes(x = year, y = share, fill = policy_function)) +
+  geom_area(alpha = 0.9) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Composition of Public Expenditure by Policy Function (COFOG, EU-27, 2006–2021)",
+    x = "Year", y = "Share of Total Expenditure", 
+    fill = "Function"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+```{r}
+ggplot(substitution_trends, aes(x = year, y = mean_p2_d1_ratio)) +
+  geom_line(color = "#e7298a", linewidth = 1.2) +
+  geom_point(color = "#e7298a", size = 2.5) +
+  labs(
+    title = "P2/D1 Ratio - Procurement vs Public Employment Intensity",
+    subtitle = "Higher values indicate greater reliance on external procurement\nEU-27 Average (2006-2021)",
+    x = "Year", y = "P2/D1 Ratio"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+growth_comparison <- growth_year[!is.na(growth)] %>%
+  filter(year >= 2007)  # Remove 2006 as it has NA values
+
+ggplot(growth_comparison, aes(x = year, y = growth, color = variable)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  scale_color_manual(values = c("#1b9e77", "#d95f02", "#7570b3")) +
+  labs(
+    title = "Growth Rate Comparison of Expenditure Components",
+    subtitle = "EU-27 Average Annual Growth (2007-2021)\nDiverging trends may indicate substitution effects",
+    x = "Year", y = "Growth Rate (%)", 
+    color = "Component"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+# Display country variation tables
+top_countries <- head(country_variation, 8)
+bottom_countries <- tail(country_variation, 8)
+
+cat("**Countries with Highest Outsourcing Intensity (P2/D1 Ratio > 0.7):**\n")
+kable(top_countries, caption = "Highest P2/D1 Ratios - 2021")
+
+cat("\n**Countries with Lowest Outsourcing Intensity (P2/D1 Ratio < 0.45):**\n")
+kable(bottom_countries, caption = "Lowest P2/D1 Ratios - 2021")
+```

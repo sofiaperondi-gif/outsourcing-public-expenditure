@@ -1,0 +1,219 @@
+---
+title: "Public Procurement Sectoral Analysis"
+author: "Sofia"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+# Load your data
+gppd_complete <- read.csv("gppd_outsourcing_data_FINAL.csv")
+
+# Prepare analysis dataset
+gppd_analysis <- gppd_complete %>%
+  filter(!is.na(tender_digiwhist_price) & tender_digiwhist_price > 0) %>%
+  mutate(
+    tender_supplytype = toupper(trimws(tender_supplytype)),
+    sector = case_when(
+      tender_supplytype == "SERVICES" ~ "Services",
+      tender_supplytype == "SUPPLIES" ~ "Supplies", 
+      tender_supplytype == "WORKS" ~ "Works",
+      TRUE ~ "Other"
+    ),
+    log_value = log(tender_digiwhist_price + 1),
+    sector = as.factor(sector),
+    buyer_country = as.factor(buyer_country),
+    tender_year = as.factor(tender_year)
+  )
+
+# Sector distribution
+sector_dist <- gppd_analysis %>%
+  group_by(sector) %>%
+  summarise(
+    n_contracts = n(),
+    total_value = sum(tender_digiwhist_price, na.rm = TRUE) / 1e9,
+    avg_value = mean(tender_digiwhist_price, na.rm = TRUE) / 1e6,
+    .groups = 'drop'
+  ) %>%
+  mutate(share = n_contracts / sum(n_contracts) * 100)
+
+# Mixed model
+library(lme4)
+model1 <- lmer(log_value ~ 1 + (1|sector) + (1|buyer_country) + (1|tender_year), 
+               data = gppd_analysis)
+vc <- as.data.frame(VarCorr(model1))
+total_variance <- sum(vc$vcov)
+vc$variance_pct <- vc$vcov / total_variance * 100
+
+# Sector concentration
+sector_concentration <- gppd_analysis %>%
+  group_by(buyer_country, sector) %>%
+  summarise(sector_value = sum(tender_digiwhist_price, na.rm = TRUE), .groups = 'drop') %>%
+  group_by(buyer_country) %>%
+  mutate(
+    total_country = sum(sector_value),
+    sector_share = sector_value / total_country
+  ) %>%
+  summarise(
+    hhi = sum(sector_share^2) * 10000,
+    n_sectors = n_distinct(sector),
+    dominant_sector = sector[which.max(sector_share)],
+    dominant_share = max(sector_share),
+    .groups = 'drop'
+  )
+
+# Sector trends
+sector_trends <- gppd_analysis %>%
+  group_by(tender_year, sector) %>%
+  summarise(
+    total_value = sum(tender_digiwhist_price, na.rm = TRUE),
+    n_contracts = n(),
+    .groups = 'drop'
+  ) %>%
+  group_by(tender_year) %>%
+  mutate(
+    annual_total = sum(total_value),
+    sector_share = total_value / annual_total
+  )
+
+# Plots
+sector_plot <- sector_dist %>%
+  mutate(
+    total_value = total_value * 1e9,
+    avg_value = avg_value * 1e6
+  )
+
+p1 <- ggplot(sector_plot, aes(x = reorder(sector, -share), y = n_contracts)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = scales::comma(n_contracts)), vjust = -0.3, size = 3) +
+  labs(title = "Number of Contracts by Sector (EU-27)",
+       x = "Sector", y = "Contracts") +
+  theme_minimal()
+
+p2 <- ggplot(sector_plot, aes(x = reorder(sector, -total_value), y = total_value/1e12)) +
+  geom_col(fill = "darkorange") +
+  geom_text(aes(label = paste0("$", round(total_value/1e12, 1), "T")),
+            vjust = -0.3, size = 3) +
+  labs(title = "Total Value of Contracts by Sector (EU-27)",
+       x = "Sector", y = "Contract Value (USD Trillions)") +
+  theme_minimal()
+
+contracts_trends <- gppd_analysis %>%
+  group_by(tender_year, sector) %>%
+  summarise(n_contracts = n(), .groups = 'drop')
+
+p3 <- ggplot(contracts_trends, aes(x = as.numeric(as.character(tender_year)), 
+                                   y = n_contracts, color = sector)) +
+  geom_line(size = 1) +
+  geom_point(size = 1.5) +
+  labs(title = "Annual Distribution of Contracts by Sector (EU-27)",
+       x = "Year", y = "Number of Contracts") +
+  theme_minimal()
+
+top10_countries <- gppd_analysis %>%
+  group_by(buyer_country) %>%
+  summarise(total_value = sum(tender_digiwhist_price, na.rm = TRUE)) %>%
+  top_n(10, total_value) %>%
+  pull(buyer_country)
+
+p4 <- gppd_analysis %>%
+  filter(buyer_country %in% top10_countries) %>%
+  ggplot(aes(x = log_value, fill = buyer_country)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Distribution of Contract Values (Top-10 EU Countries)",
+       x = "Log Contract Value", y = "Density") 
+  theme_minimal()
+
+```
+
+```{r sector-table}
+sector_dist %>%
+  mutate(
+    total_value = round(total_value, 2),
+    avg_value = round(avg_value, 2),
+    share = round(share, 1)
+  ) %>%
+  kable(
+    caption = "Sector Distribution in EU Public Procurement",
+    col.names = c("Sector", "Contracts", "Total Value (€B)", "Avg Value (€M)", "Share (%)")
+  )
+
+```
+
+```{r variance-table}
+vc %>%
+  mutate(
+    vcov = round(vcov, 3),
+    variance_pct = round(variance_pct, 1)
+  ) %>%
+  kable(
+    caption = "Variance Components in Log Contract Values",
+    col.names = c("Group", "Effect 1", "Effect 2", "Variance", "SD", "Variance (%)")
+  )
+
+```
+
+```{r concentration-table}
+
+sector_concentration %>%
+  mutate(
+    hhi = round(hhi, 0),
+    dominant_share = round(dominant_share * 100, 1)
+  ) %>%
+  kable(
+    caption = "Sectoral Concentration by Country",
+    col.names = c("Country", "HHI", "# Sectors", "Dominant Sector", "Dominant Share (%)")
+  )
+
+```
+
+```{r trends-table}
+sector_trends %>%
+  filter(tender_year %in% c("2007", "2010", "2015", "2020")) %>%
+  mutate(
+    total_value = round(total_value / 1e9, 2),
+    sector_share = round(sector_share * 100, 1)
+  ) %>%
+  kable(
+    caption = "Sector Trends Over Time (Selected Years)",
+    col.names = c("Year", "Sector", "Value (€B)", "Contracts", "Annual Total (€)", "Share (%)")
+  )
+
+```
+
+```{r plot-p1}
+p1
+
+```
+
+```{r plot-p2}
+p2
+
+```
+
+```{r plot-p3}
+p3
+
+```
+
+```{r plot-p4}
+p4
+
+```
+
+This report analyzes over 2 million public procurement contracts across 27 EU countries from 2002 to 2021. Using `tender_supplytype`, contracts were classified into Services, Supplies, and Works.
+
+- **Sector Distribution**: Supplies dominate both in volume and value, accounting for over half of all contracts. Services and Works follow, with Works showing higher average contract values.
+- **Variance Decomposition**: Mixed-effects modeling reveals that country-level differences explain 23% of the variation in contract value, sector explains 7%, and year explains 4.5%. The remaining 65% is residual, reflecting buyer-specific and unobserved factors.
+- **Sectoral Concentration**: Some countries (e.g., Bulgaria) are highly specialized in one sector, while others maintain a more balanced procurement portfolio. The average Herfindahl-Hirschman Index (HHI) is 5090, indicating moderate concentration.
+- **Trends Over Time**: Works contracts peaked in 2007, likely due to infrastructure investment cycles. Supplies have grown steadily, reflecting ongoing material needs across sectors.
+- **Top Countries**: The distribution of contract values varies widely across top buyers, with some countries showing tighter clustering and others more dispersion.
+
+This analysis provides a foundation for understanding procurement behavior across the EU and identifying patterns of specialization, investment, and strategic variation.
+  
+  

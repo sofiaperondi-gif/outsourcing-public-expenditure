@@ -1,0 +1,164 @@
+---
+title: "GPPD Diagnostic Report"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_float: true
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+This report provides a diagnostic analysis of the Global Public Procurement Dataset (GPPD) filtered for EU-27 countries, covering contracts awarded between 2006 and 2021.
+The dataset is contract-level and includes information on the contracting authority (buyer), suppliers (bidders), contract values, sector of activity, and selected indicators of process quality (e.g. single bidding, selection method).
+
+``` 
+# Load dataset (already cleaned and saved)
+gppd_complete <- fread("gppd_outsourcing_data_FINAL.csv")
+
+cat("Final dataset contains", nrow(gppd_complete), "contracts\n")
+cat("Countries included:", toString(sort(unique(gppd_complete$buyer_country))), "\n")
+```
+
+We first evaluate the extent of missing values across variables. This is crucial to decide which variables can be used robustly in empirical models.
+
+```{r}
+missingness <- sapply(gppd_complete, function(x) mean(is.na(x)) * 100)
+missingness <- sort(missingness, decreasing = TRUE)
+head(missingness, 10)
+```
+
+Interpretation:
+Variables like lot_updateddurationdays and bid_subcontractedproportion are missing almost entirely (>90%), and therefore should not be used in the core analysis.
+Procurement process indicators such as corr_singleb (single bidding) have moderate missingness (~20%) but remain usable.
+Core variables (buyer_country, buyer_nuts, tender_year, tender_supplytype, tender_digiwhist_price) are fully populated and reliable.
+
+```{r}
+table(gppd_complete$tender_supplytype, useNA = "ifany")
+```
+
+Contracts are classified into three main categories (Works, Supplies, Services) according to the harmonised supply type.
+
+```{r}
+summary_supplytype <- gppd_complete %>%
+  group_by(tender_supplytype) %>%
+  summarise(
+    n_contracts = n(),
+    total_value_billion = sum(tender_digiwhist_price, na.rm = TRUE) / 1e9,
+    avg_value_million = mean(tender_digiwhist_price, na.rm = TRUE) / 1e6,
+    .groups = "drop"
+  )
+summary_supplytype
+```
+
+Supplies dominate in terms of number of contracts and total value.
+Services show high diversity but lower average values.
+Works contracts are fewer but often represent large-scale infrastructure projects.
+
+```{r}
+summary_country_year <- gppd_complete %>%
+  group_by(buyer_country, tender_year) %>%
+  summarise(
+    n_contracts = n(),
+    total_value_billion = sum(tender_digiwhist_price, na.rm = TRUE) / 1e9,
+    .groups = "drop"
+  )
+head(summary_country_year, 27)
+```
+This table shows the evolution of contract counts and values at the country-year level, which will be the main unit for later econometric analysis.
+
+Not all countries have full coverage for the entire 2006–2021 period. We inspect which years are present for each country.
+
+```{r}
+coverage <- gppd_complete %>%
+  group_by(buyer_country, tender_year) %>%
+  summarise(n_contracts = n(), .groups = "drop") %>%
+  complete(buyer_country, tender_year = 2006:2021, fill = list(n_contracts = 0))
+
+coverage_summary <- coverage %>%
+  group_by(buyer_country) %>%
+  summarise(
+    first_year = min(tender_year[n_contracts > 0], na.rm = TRUE),
+    last_year  = max(tender_year[n_contracts > 0], na.rm = TRUE),
+    total_years = sum(n_contracts > 0),
+    .groups = "drop"
+  )
+coverage_summary
+```
+
+For many countries, reliable data begin only around 2011–2014.
+Some countries (e.g. Romania) have longer coverage but not necessarily with consistent reporting quality.
+
+```{r}
+coverage_matrix <- coverage %>%
+  mutate(has_data = ifelse(n_contracts > 0, 1, 0))
+
+ggplot(coverage_matrix, aes(x = tender_year, y = buyer_country, fill = factor(has_data))) +
+  geom_tile(color = "white") +
+  scale_fill_manual(values = c("0" = "lightgrey", "1" = "steelblue"),
+                    name = "Data available",
+                    labels = c("No", "Yes")) +
+  labs(title = "Coverage of GPPD Contracts by Country and Year",
+       x = "Year", y = "Country") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+We compare two possible panels:
+Full panel (2006–2021): maximises years, but many early years are empty.
+Comparable panel (2011–2021): shorter period, but more consistent across EU-27.
+
+```{r}
+panel_unbalanced <- gppd_complete %>%
+  group_by(buyer_country, tender_year) %>%
+  summarise(
+    n_contracts = n(),
+    total_value_billion = sum(tender_digiwhist_price, na.rm = TRUE) / 1e9,
+    .groups = "drop"
+  ) %>%
+  complete(buyer_country, tender_year = 2006:2021,
+           fill = list(n_contracts = 0, total_value_billion = 0))
+
+panel_balanced <- panel_unbalanced %>%
+  filter(tender_year >= 2011 & tender_year <= 2021)
+
+compare_loss <- data.frame(
+  Dataset = c("Full 2006–2021", "Comparable 2011–2021"),
+  Years = c(length(unique(panel_unbalanced$tender_year)),
+            length(unique(panel_balanced$tender_year))),
+  Total_contracts = c(sum(panel_unbalanced$n_contracts),
+                      sum(panel_balanced$n_contracts)),
+  Total_value_B = c(sum(panel_unbalanced$total_value_billion),
+                    sum(panel_balanced$total_value_billion))
+)
+compare_loss
+```
+
+Restricting to 2011–2021 removes ~7% of contracts but only ~0.05% of total value.
+This suggests early years are sparse and low-value relative to the bulk of the dataset.
+
+Conclusion:
+Coverage: EU-27 dataset is rich but uneven; reliable coverage starts mostly around 2011.
+Variables: Core contract values and sector classifications are robust; process indicators have partial availability; subcontracting data are largely unusable.
+Panel choice: Both full (2006–2021) and comparable (2011–2021) panels are possible. For econometric modelling, the shorter window may be preferable for consistency.
+
+```{r}
+# install.packages("xtable")
+library(xtable)
+
+# Export coverage_summary as .tex
+tab_cov <- xtable(coverage_summary,
+                  caption = "Coverage of GPPD Contracts by Country (2006–2021)",
+                  label = "tab:gppd_coverage")
+
+print(tab_cov, file = "coverage_summary.tex", include.rownames = FALSE)
+```

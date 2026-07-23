@@ -1,0 +1,114 @@
+
+---
+title: "Model Specification and Diagnostic Analysis: Stationarity, Persistence, and Endogeneity in the Baseline TWFE Framework"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    number_sections: true
+    keep_tex: false
+---
+
+```{r setup, include=FALSE}
+# ========== SETUP ==========
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(plm)
+library(lmtest)
+library(sandwich)
+library(stargazer)
+```
+
+The baseline specification aimed to explain the growth of real public expenditure in EU countries between 2011 and 2021 through a Two-Way Fixed Effects (TWFE) framework.
+Although methodologically correct, the initial model presented several weaknesses: it explained only 28.7% of within-country variation, and only two variables — old-age dependency ratio and public debt — were statistically significant.
+Upon diagnostic review, a critical omitted variable problem was identified.
+The model lacked a key macroeconomic control: economic growth.
+Without controlling for the business cycle, the baseline equation suffered from omitted variable bias, as public spending is strongly influenced by GDP dynamics through both revenue and fiscal policy channels.
+To correct this, the recession dummy was replaced with a continuous measure of real GDP growth (gdp_growth_real).
+This adjustment improved both theoretical coherence and empirical performance, as the new specification aligns the explanatory variable with the dependent variable (both expressed in real terms).
+
+```{r}
+# === 1️⃣ Import data ===
+
+# Path assoluto senza spazi problematici
+DATA_PATH <- file.path("~/Desktop/Tesina_IV/Data_analysis/Downloaded_data/FINAL_ANALYSIS_DATASET_2006_2021.csv")
+
+# Oppure: usa il path relativo se il file è nella stessa cartella del tuo .Rmd
+# DATA_PATH <- "FINAL_ANALYSIS_DATASET_2006_2021.csv"
+
+stopifnot(file.exists(path.expand(DATA_PATH)))  # Controlla che esista prima di procedere
+final_dataset <- read_csv(DATA_PATH, show_col_types = FALSE) %>%
+  filter(tender_year >= 2011)
+
+# === 2️⃣ Build panel ===
+
+macro_updated <- final_dataset %>%
+group_by(buyer_country, tender_year) %>%
+summarise(
+total_expenditure_growth_real = first(total_expenditure_growth_real),
+gdp_growth_real = first(gdp_growth_real),
+gdp_growth = first(gdp_growth),
+unemp_rate = first(unemp_rate),
+old_dep = first(old_dep),
+pop_density = first(pop_density),
+gov_debt_pct_gdp = first(gov_debt_pct_gdp),
+corruption_control = first(corruption_control),
+gov_state_market = first(gov_state_market),
+.groups = "drop"
+)
+
+mp_updated <- pdata.frame(macro_updated, index = c("buyer_country", "tender_year"))
+
+# === 3️⃣ Estimate models ===
+
+fml_baseline <- total_expenditure_growth_real ~ unemp_rate + old_dep + pop_density +
+gov_debt_pct_gdp + corruption_control + gov_state_market + factor(tender_year)
+fml_improved <- update(fml_baseline, . ~ gdp_growth_real + .)
+fml_nominal <- update(fml_baseline, . ~ gdp_growth + .)
+
+m_twfe_baseline <- plm(fml_baseline, data = mp_updated, model = "within")
+m_twfe_improved <- plm(fml_improved, data = mp_updated, model = "within")
+m_twfe_nominal <- plm(fml_nominal, data = mp_updated, model = "within")
+
+# === 4️⃣ Clustered SE ===
+
+se_baseline <- sqrt(diag(vcovHC(m_twfe_baseline, type = "HC1", cluster = "group")))
+se_improved <- sqrt(diag(vcovHC(m_twfe_improved, type = "HC1", cluster = "group")))
+se_nominal <- sqrt(diag(vcovHC(m_twfe_nominal, type = "HC1", cluster = "group")))
+```
+
+
+```{r}
+stargazer(m_twfe_nominal, m_twfe_improved,
+type = "latex",
+title = "Comparison of TWFE Models: Nominal vs Real GDP Growth",
+dep.var.labels = "Real Public Expenditure Growth",
+column.labels = c("Nominal GDP", "Real GDP"),
+covariate.labels = c("GDP Growth", "Unemployment Rate", "Old-age Dependency",
+"Population Density", "Public Debt (% GDP)",
+"Corruption Control", "Government Orientation (Market)",
+"Year Fixed Effects"),
+add.lines = list(
+c("R² (within)",
+sprintf("%.3f", summary(m_twfe_nominal)$r.squared["rsq.within"]),
+sprintf("%.3f", summary(m_twfe_improved)$r.squared["rsq.within"]))
+),
+omit.stat = c("f", "ser"),
+notes = "Cluster-robust standard errors by country in parentheses.",
+notes.align = "l")
+```
+
+
+Including real GDP growth materially improves the model:
+- the within–R² increases (see Table 1),
+- more coefficients become statistically meaningful,
+- and the signs align with macro-fiscal theory.
+Real GDP growth emerges as the main determinant of expenditure growth, while market-oriented governments are associated with more restrained spending dynamics.
+
+To verify robustness, a comparison was performed between specifications using nominal and real GDP growth.
+Although both series are highly correlated (ρ ≈ 0.87), the real measure provides a more reliable macroeconomic signal, being unaffected by inflationary effects.
+As shown in Table 1, the real GDP specification yields slightly higher explanatory power and more stable coefficients.
+
+

@@ -1,0 +1,114 @@
+
+---
+title: "GPPD – Sectoral Dispersion (Excluding Italy 2016)"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_float: true
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.width = 9, fig.height = 5, dpi = 300
+)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+data_dir <- "/Users/sofiaperondi/Desktop/Tesina IV /Data selection and summary analysis /Downloaded data"
+out_dir  <- file.path(data_dir, "outputs_exIT2016")
+```
+
+This report replicates the sectoral dispersion analysis for the EU-27 (2011–2021), but excludes Italy in 2016 due to a documented data anomaly.
+According to the GPPD documentation, Italy switched to a new open data publication format, which led to misclassification and extremely large totals (e.g., millions of contracts missing supply-type, and implausibly high total values).
+We therefore drop Italy–2016 for analytical consistency; all other steps mirror the baseline report.
+
+```{r}
+sector_dist <- fread(file.path(out_dir, "01_sector_distribution_clean_exIT2016.csv"))
+knitr::kable(sector_dist,
+             caption = "Table 1. Sector Distribution of Contracts (EU-27, 2011–2021), excl. Italy 2016")
+
+```
+
+```{r}
+contracts_by_sector <- fread(file.path(out_dir, "04_contracts_by_sector_clean_exIT2016.csv"))
+ggplot(contracts_by_sector, aes(x = Sector, y = `Number of Contracts`, fill = Sector)) +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Number of Contracts by Sector (EU-27, 2011–2021) – Excl. Italy 2016",
+       x = "Sector", y = "Contracts") +
+  theme_minimal()
+```
+
+```{r}
+value_by_sector <- fread(file.path(out_dir, "05_value_by_sector_clean_exIT2016.csv"))
+ggplot(value_by_sector, aes(x = Sector, y = `Total Value (Billion USD, PPP)`, fill = Sector)) +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Total Value of Contracts by Sector (EU-27, 2011–2021) – Excl. Italy 2016",
+       x = "Sector", y = "Total Value (Billion USD, PPP)") +
+  theme_minimal()
+```
+
+```{r}
+vc <- fread(file.path(out_dir, "02_variance_components_clean_exIT2016.csv"))
+knitr::kable(vc, caption = "Table 2. Variance Components in Log Contract Values – Excl. Italy 2016")
+```
+
+```{r}
+knitr::include_graphics(file.path(out_dir, "plot_variance_share_M3_exIT2016.png"))
+```
+
+
+```{r}
+sector_conc <- fread(file.path(out_dir, "03_sector_concentration_clean_exIT2016.csv"))
+knitr::kable(head(sector_conc, 15),
+             caption = "Table 3. Sectoral Concentration by Country (Top 15 rows), Excl. Italy 2016")
+```
+
+
+```{r}
+annual_sector <- fread(file.path(out_dir, "06_annual_contracts_by_sector_clean_exIT2016.csv"))
+ggplot(annual_sector,
+       aes(x = Year, y = `Share of Contracts (%)`/100, color = Sector)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = percent) +
+  labs(title = "Annual Sectoral Shares of Contracts (EU-27) – Excl. Italy 2016",
+       x = "Year", y = "Share of Contracts") +
+  theme_minimal()
+```
+
+
+```{r}
+knitr::include_graphics(file.path(out_dir, "plot_density_contract_values_top10_exIT2016.png"))
+```
+
+
+```{r}
+knitr::include_graphics(file.path(out_dir, "plot_distribution_values_top10_box_exIT2016.png"))
+```
+
+
+```{r}
+avg_price_cs <- fread(file.path(out_dir, "07_avg_price_by_country_sector_clean_exIT2016.csv"))
+knitr::kable(head(avg_price_cs, 20),
+             caption = "Table 4. Average Contract Values by Country × Sector (Top 20 rows), Excl. Italy 2016")
+```
+
+
+```{r}
+knitr::include_graphics(file.path(out_dir, "plot_avg_contract_value_country_year_exIT2016.png"))
+```
+
+
+
+```{r}
+knitr::include_graphics(file.path(out_dir, "plot_total_contract_value_country_year_exIT2016.png"))
+```
+
+Excluding Italy–2016 removes a documented anomaly and reveals the underlying structure of the EU-27 procurement landscape. Sectoral shares, variance components, and concentration patterns are now more stable across time and countries, enabling cleaner comparisons with public expenditure aggregates in the next stage of the analysis.

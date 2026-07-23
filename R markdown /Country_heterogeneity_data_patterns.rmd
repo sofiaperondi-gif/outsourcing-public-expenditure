@@ -1,0 +1,373 @@
+---
+title: "Country Heterogeneity and Data Patterns"
+author: "Sofia Perondi"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment = NA)
+options(knitr.kable.NA = "")
+knitr::opts_chunk$set(comment = NA)
+options(knitr.kable.NA = "")
+library(tidyverse)
+library(fixest)
+library(kableExtra)
+library(plm)
+
+options(knitr.table.format = "latex")
+
+# Usa lo stesso dataset del report principale
+setwd("~/Desktop/Tesina IV /Data analysis /Downloaded data")
+df <- read_csv("final_countryyear_2011_2021.csv", show_col_types = FALSE)
+```
+
+# Country-Level Heterogeneity of Outsourcing Effects
+
+**Purpose and Motivation**
+
+This section examines whether the estimated relationship between outsourcing intensity ($X$) and real public expenditure ($Y$) is **homogeneous across EU countries**, or whether it varies systematically across national contexts.  
+The baseline Two-Way Fixed Effects (TWFE) model imposes a common elasticity of public spending with respect to outsourcing for all countries, which may be restrictive if institutional quality, administrative capacity, or fiscal frameworks differ across member states.  
+By estimating **country-specific interaction effects** ($\hat{\beta}_{X \times country}$), we can evaluate to what extent the effect of outsourcing depends on country-specific factors.
+
+**Analytical Components**
+
+1. **Country-specific coefficients and distribution analysis.**  
+   For each country $c$, we estimate the elasticity of demeaned log public expenditure with respect to demeaned outsourcing intensity.  
+   The resulting coefficients and confidence intervals are presented in a table and visualised via a **barplot** and **heatmap**, illustrating the spread, magnitude, and sign of the effects across countries.  
+   → This step provides a descriptive decomposition of the TWFE average, revealing whether the positive baseline relationship is driven by a subset of countries or is broadly consistent.
+
+2. **Categorisation by sign and significance.**  
+   Countries are grouped into four categories based on the sign and statistical significance of their estimated coefficients (Positive–Significant, Positive–Not Significant, Negative–Significant, Negative–Not Significant).  
+   → This allows us to identify whether the heterogeneity reflects sampling noise or genuine structural divergence in how outsourcing affects fiscal behaviour.
+
+3. **Cross-country comparison of structural characteristics.**  
+   The groups above are then compared in terms of institutional and macroeconomic indicators such as *Control of Corruption*, *Government State–Market Orientation*, *Unemployment Rate*, and *Debt-to-GDP ratio*.  
+   → If the “Positive–Significant” group tends to coincide with countries that have higher institutional quality or market openness, this may indicate that outsourcing translates more effectively into expenditure efficiency under favourable governance conditions.
+
+4. **Correlation between country effects and structural indicators.**  
+   We compute correlations (and visual scatterplots) between the estimated $\hat{\beta}_{X \times country}$ coefficients and country-level characteristics.  
+   → This analysis tests whether cross-country differences in the outsourcing–spending relationship are systematically associated with governance or economic development patterns, as might be expected if the effect of outsourcing is conditional on administrative or fiscal capacity.
+
+**Interpretive Goal**
+
+Together, these exercises assess whether the TWFE assumption of a common treatment effect across all units is plausible.  
+If country-level effects cluster around zero with limited dispersion, the TWFE model is well justified.  
+Conversely, strong dispersion or correlation with structural variables would suggest that the estimated “average” elasticity masks meaningful heterogeneity, motivating extensions such as hierarchical or group-specific models.
+
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+# ---- 1) Stima TWFE con eterogeneità per paese (X × country) ----
+m_countryhet <- feols(
+  ln_spesa_dm ~ i(buyer_country, X, ref = "IT") +
+    ln_unemp_rate + ln_pop_density + ln_gov_debt +
+    corruption_control + gov_state_market + recession |
+    tender_year + buyer_country,
+  data = df, cluster = ~ buyer_country
+)
+
+# ---- 2) Estrai i coefficienti paese-specifici (preserva SE clustered) ----
+coefs_cty <- broom::tidy(m_countryhet, conf.int = TRUE) %>%
+  # prendi solo i termini di interazione con buyer_country (cioè X×country)
+  filter(str_detect(term, "buyer_country")) %>%
+  # cattura ISO a due lettere in modo robusto
+  mutate(buyer_country = str_extract(term,
+    "(AT|BE|BG|CY|CZ|DE|DK|EE|EL|ES|FI|FR|HR|HU|IE|IT|LT|LU|LV|MT|NL|PL|PT|RO|SE|SI|SK)"
+  )) %>%
+  select(buyer_country, estimate, std.error, statistic, p.value, conf.low, conf.high)
+
+# Aggiungi IT come riferimento (effetto = 0, senza p-value)
+coefs_cty <- bind_rows(
+  coefs_cty,
+  tibble(buyer_country = "IT", estimate = 0, std.error = NA_real_,
+         statistic = NA_real_, p.value = NA_real_,
+         conf.low = NA_real_, conf.high = NA_real_)
+)
+
+# ---- 3) Crea categorie: segno × significatività ----
+coefs_cty <- coefs_cty %>%
+  mutate(
+    signif = case_when(
+      is.na(p.value) ~ "Reference",
+      p.value < 0.05 ~ "p<0.05",
+      p.value < 0.10 ~ "p<0.10",
+      TRUE ~ "n.s."
+    ),
+    sign = case_when(
+      estimate >  0 ~ "Positive",
+      estimate <  0 ~ "Negative",
+      TRUE ~ "Zero"
+    ),
+    group = case_when(
+      buyer_country == "IT"                ~ "Reference (IT)",
+      p.value < 0.05 & estimate >  0       ~ "Positive-Significant",
+      p.value < 0.05 & estimate <  0       ~ "Negative-Significant",
+      estimate > 0                         ~ "Positive-Not Sig",
+      estimate < 0                         ~ "Negative-Not Sig",
+      TRUE                                 ~ "Zero/Other"
+    )
+  )
+
+# ---- 4) Tabella: coefficiente per paese con CI e p-value ----
+tab_coef <- coefs_cty %>%
+  arrange(desc(estimate)) %>%
+  mutate(across(c(estimate, std.error, conf.low, conf.high, p.value), ~round(., 4)))
+
+kable(tab_coef,
+      booktabs = TRUE,
+      caption = "Country-specific effect of outsourcing (X) on demeaned public expenditure") %>%
+  kable_styling(latex_options = c("HOLD_position", "scale_down"), font_size = 8)
+
+# ---- 5) Conteggio: paesi per categoria (segno × significatività) ----
+tab_counts <- coefs_cty %>%
+  filter(buyer_country != "IT") %>%
+  count(group) %>%
+  arrange(desc(n))
+
+kable(tab_counts, booktabs = TRUE,
+      caption = "Countries by effect category (relative to IT=reference)") %>%
+  kable_styling(latex_options = c("HOLD_position"), font_size = 8)
+
+# ---- 6) Clusterizzazione in gruppi e confronti di medie strutturali ----
+struct_vars <- c("corruption_control", "gov_state_market",
+                 "unemp_rate", "pop_density", "gov_debt_pct_gdp")
+
+country_means <- df %>%
+  group_by(buyer_country) %>%
+  summarise(across(all_of(struct_vars), ~mean(.x, na.rm = TRUE), .names = "{.col}"),
+            .groups = "drop")
+
+by_group_means <- coefs_cty %>%
+  select(buyer_country, group, estimate) %>%
+  left_join(country_means, by = "buyer_country") %>%
+  group_by(group) %>%
+  summarise(across(c(estimate, all_of(struct_vars)), ~mean(.x, na.rm = TRUE)),
+            .groups = "drop") %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+kable(by_group_means, booktabs = TRUE,
+      caption = "Group averages: effect size and structural indicators by country-cluster") %>%
+  kable_styling(latex_options = c("HOLD_position", "scale_down"), font_size = 8)
+
+# ---- 7) Correlazioni tra effetto paese e indicatori strutturali ----
+eff_struct <- coefs_cty %>%
+  select(buyer_country, estimate) %>%
+  left_join(country_means, by = "buyer_country")
+
+cor_tbl <- tibble(
+  variable = struct_vars,
+  correlation = map_dbl(struct_vars, ~ cor(eff_struct$estimate, eff_struct[[.x]], use = "pairwise.complete.obs"))
+) %>% mutate(correlation = round(correlation, 3))
+
+kable(cor_tbl, booktabs = TRUE,
+      caption = "Correlation between country-specific effect of X and structural indicators") %>%
+  kable_styling(latex_options = c("HOLD_position"), font_size = 8)
+
+# ---- 8) Visualizzazioni sintetiche ----
+
+# Barplot ordinato dei coefficienti per paese
+coefs_cty %>%
+  filter(!is.na(estimate)) %>%
+  mutate(buyer_country = fct_reorder(buyer_country, estimate)) %>%
+  ggplot(aes(x = buyer_country, y = estimate, fill = group)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Country (ISO)", y = "Estimated effect of X",
+       title = "Country-specific effects of outsourcing (demeaned)") +
+  theme_minimal()
+
+# Heatmap (opzionale): intensità dell'effetto per paese
+coefs_cty %>%
+  ggplot(aes(x = "Effect", y = fct_reorder(buyer_country, estimate), fill = estimate)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B") +
+  labs(x = NULL, y = "Country (ISO)", fill = "Effect",
+       title = "Heatmap of country-specific effects") +
+  theme_minimal()
+```
+
+# Descriptive Patterns of Public Expenditure and Outsourcing
+
+**Purpose and Motivation**
+
+Before interpreting country-level heterogeneity, it is essential to understand how the key variables—demeaned log public expenditure ($Y = \text{ln\_spesa\_dm}$) and demeaned outsourcing intensity ($X$)—are distributed across space (countries) and time (years).  
+This section provides a systematic **descriptive exploration** of the dataset, highlighting how these variables cluster, vary, and co-move across units and periods.  
+Such diagnostics are important to interpret the previous results: differences in estimated coefficients may reflect true behavioural heterogeneity or simply differences in the level, variance, or time-path of the variables.
+
+**Analytical Components**
+
+1. **Global descriptive statistics.**  
+   We begin with overall means, standard deviations, minima, maxima, and medians of $Y$ and $X$, providing a benchmark for the scale and variability of both measures.  
+   → This offers a sense of the central tendency and dispersion in the full sample and validates the log–demeaned transformation.
+
+2. **Cross-country distribution.**  
+   For each country, we report average values and within-country standard deviations of $Y$ and $X$.  
+   Visualisations include boxplots and barplots ordered by the mean.  
+   → These show whether some countries consistently exhibit higher or lower public spending or outsourcing levels, and how much dispersion exists within each national panel.
+
+3. **Temporal distribution.**  
+   The same statistics are computed by year, complemented by line plots that trace aggregate evolution of $Y$ and $X$ over time.  
+   → This allows us to detect common temporal shocks (e.g., financial crisis, post-2010 austerity, COVID-19) or shared cyclical patterns, providing a temporal context for interpreting heterogeneity.
+
+4. **Cross-sectional and temporal clustering.**  
+   We compute and visualise correlations between $Y$ and $X$ across both the country and year dimensions.  
+   → This helps determine whether the outsourcing–spending relationship is primarily **cross-sectional** (countries with higher outsourcing tend to have higher spending) or **within-country over time** (spending responds to changes in outsourcing intensity within each unit).
+
+**Interpretive Goal**
+
+This section serves as a **structural diagnostic** of the data generating process.  
+If both $Y$ and $X$ show limited within-country variation or are strongly clustered by country, the TWFE identification largely reflects cross-country differences.  
+Conversely, substantial within-country movement and weak clustering would support a within-panel interpretation of the estimated elasticities.
+
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+library(tidyverse)
+library(kableExtra)
+
+df <- df %>%
+  mutate(
+    buyer_country = factor(buyer_country,
+      levels = sort(unique(buyer_country))),
+    tender_year = factor(tender_year, levels = sort(unique(tender_year)))
+  )
+
+# Comodo: selettore variabili chiave
+vars_yx <- c("ln_spesa_dm", "X")
+
+# ---- 2.2 Distribuzione per Paese ----
+by_country <- df %>%
+  group_by(buyer_country) %>%
+  summarise(
+    mean_Y = mean(ln_spesa_dm, na.rm = TRUE),
+    sd_Y   = sd(ln_spesa_dm, na.rm = TRUE),
+    mean_X = mean(X,            na.rm = TRUE),
+    sd_X   = sd(X,              na.rm = TRUE),
+    n      = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_X)) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+kable(by_country, booktabs = TRUE,
+      caption = "Country-level means and standard deviations of Y and X") %>%
+  kable_styling(latex_options = c("HOLD_position", "scale_down"), font_size = 8)
+
+
+# Boxplot: distribuzione intra-paese di X
+df %>%
+  ggplot(aes(x = fct_reorder(buyer_country, X, .fun = median, .desc = TRUE), y = X)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  coord_flip() +
+  labs(x = "Country (ISO)", y = "X (demeaned log outsourcing)",
+       title = "Within-country distribution of X") +
+  theme_minimal()
+
+# Boxplot: distribuzione intra-paese di Y
+df %>%
+  ggplot(aes(x = fct_reorder(buyer_country, ln_spesa_dm, .fun = median, .desc = TRUE), y = ln_spesa_dm)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  coord_flip() +
+  labs(x = "Country (ISO)", y = "ln_spesa_dm",
+       title = "Within-country distribution of Y") +
+  theme_minimal()
+
+# ---- 2.3 Distribuzione per Anno ----
+by_year <- df %>%
+  group_by(tender_year) %>%
+  summarise(
+    mean_Y = mean(ln_spesa_dm, na.rm = TRUE),
+    sd_Y   = sd(ln_spesa_dm, na.rm = TRUE),
+    mean_X = mean(X,            na.rm = TRUE),
+    sd_X   = sd(X,              na.rm = TRUE),
+    n      = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(tender_year) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+kable(by_year, booktabs = TRUE,
+      caption = "Year-level means and standard deviations of Y and X") %>%
+  kable_styling(latex_options = c("HOLD_position"), font_size = 8)
+
+# Line chart: medie annuali
+by_year %>%
+  pivot_longer(cols = c(mean_Y, mean_X),
+               names_to = "series", values_to = "value") %>%
+  mutate(series = recode(series,
+                         mean_Y = "Y (demeaned log public expenditure)",
+                         mean_X = "X (demeaned log outsourcing)")) %>%
+  ggplot(aes(x = tender_year, y = value, color = series)) +
+  geom_line() + geom_point() +
+  labs(x = "Year", y = "Mean (demeaned)",
+       title = "Annual means of Y and X") +
+  theme_minimal()
+
+# Boxplot per anno: X
+df %>%
+  ggplot(aes(x = factor(tender_year), y = X)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  labs(x = "Year", y = "X (demeaned log outsourcing)",
+       title = "Within-year distribution of X") +
+  theme_minimal()
+
+# Boxplot per anno: Y
+df %>%
+  ggplot(aes(x = factor(tender_year), y = ln_spesa_dm)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  labs(x = "Year", y = "ln spesa dm",
+       title = "Within-year distribution of Y") +
+  theme_minimal()
+
+# ---- 2.4 Correlazione Y–X per Paese (e per Anno, opzionale) ----
+cor_by_country <- df %>%
+  group_by(buyer_country) %>%
+  summarise(
+    cor_YX = cor(ln_spesa_dm, X, use = "pairwise.complete.obs"),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(cor_YX)) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+kable(cor_by_country, booktabs = TRUE,
+      caption = "Within-country correlation between Y and X") %>%
+  kable_styling(latex_options = c("HOLD_position"), font_size = 8)
+
+# Barplot correlazioni per paese
+# Barplot correlazioni per paese (fixato)
+cor_by_country %>%
+  filter(!is.na(buyer_country), !is.na(cor_YX)) %>%
+  mutate(
+    buyer_country = factor(buyer_country),
+    buyer_country = fct_reorder(buyer_country, cor_YX, .fun = mean, .desc = FALSE)
+  ) %>%
+  ggplot(aes(x = buyer_country, y = cor_YX)) +
+  geom_col(fill = "#4575b4") +
+  coord_flip() +
+  labs(
+    x = "Country (ISO)",
+    y = "Corr(Y, X)",
+    title = "Within-country correlation between Y and X"
+  ) +
+  theme_minimal(base_size = 11)
+
+# (Opzionale) Correlazione per anno
+cor_by_year <- df %>%
+  group_by(tender_year) %>%
+  summarise(cor_YX = cor(ln_spesa_dm, X, use = "pairwise.complete.obs"),
+            .groups = "drop") %>%
+  arrange(tender_year) %>%
+  mutate(cor_YX = round(cor_YX, 3))
+
+kable(cor_by_year, booktabs = TRUE,
+      caption = "Within-year correlation between Y and X") %>%
+  kable_styling(latex_options = c("HOLD_position"), font_size = 8)
+```
+
